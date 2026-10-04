@@ -48,6 +48,9 @@ frontend/coverage/
 # IDE
 .idea/
 
+# Git worktrees
+.worktrees/
+
 # Coverage
 coverage/
 *.coverage*
