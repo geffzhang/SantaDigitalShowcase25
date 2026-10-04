@@ -1,13 +1,13 @@
 # 脱离 Azure 的自托管改造：评估与目标设计
 
 **日期：** 2026-10-04
-**状态：** 用户已确认；实施计划已拆分为四个工作流
+**状态：** 原设计和 PostgreSQL 目标已确认；SelfHosted 阶段 0A 方案已批准，规格补充待用户复核
 
 ## 1. 目标与范围
 
 让项目能在开发者电脑和自有 Linux 主机上运行，不依赖 Azure 账户、Azure 托管服务或 Azure 凭据。保留 React 前端、.NET API 和业务流程、Drasi 连续查询、实时更新以及 AI Agent/工具调用体验。开发机使用 .NET Aspire 13.6 AppHost 编排应用侧服务；一条启动命令按需创建 kind/k3d 集群、部署 Drasi，再启动 Aspire。Linux 主机使用 K3s 或标准 Kubernetes 部署自托管服务。
 
-默认运行环境使用自托管组件。范围包含本地模型推理，不要求使用 Azure 或其他外部托管 AI 服务。初次部署可能需要下载容器镜像和模型权重，但正常运行时不得调用 Azure。开发机由 Aspire AppHost 定义本地服务图，Linux 主机使用 Kubernetes 部署清单；两种环境共用应用配置契约、镜像/业务代码和 Drasi 资源定义，但不要求采用相同的应用编排器。
+最终运行环境使用自托管组件。模型可运行于开发机或用户控制的远端主机；不要求使用 Azure 或第三方托管 AI 服务。初次部署可能需要下载容器镜像和模型权重，但正常运行时不得调用 Azure。开发机由 Aspire AppHost 定义本地服务图，Linux 主机使用 Kubernetes 部署清单；两种环境共用应用配置契约、镜像/业务代码和 Drasi 资源定义，但不要求采用相同的应用编排器。
 
 本评估不包括从现有 Azure 生产环境迁移数据、多主机高可用或指定模型/硬件的性能基准。若需保留现有云端数据，应另行明确导出、导入和切换要求。
 
@@ -65,7 +65,7 @@
         |-- React 前端（如独立开发服务器）
         |-- ASP.NET Core API
         |     |-- PostgreSQL
-        |     +-- 本地 OpenAI-compatible 模型服务
+        |     +-- OpenAI-compatible 自托管模型端点（本机或用户控制的远端主机）
         +-- 提供本地服务发现、连接配置和运行状态
 
 Linux 主机：K3s/标准 Kubernetes 部署 API、前端、PostgreSQL、模型服务和 Drasi
@@ -91,7 +91,7 @@ Linux 主机：K3s/标准 Kubernetes 部署 API、前端、PostgreSQL、模型�
 
 ### 部署与运维
 
-开发机采用两层编排。`Aspire.Hosting.AppHost` 13.6.0 定义并启动 API、PostgreSQL、本地模型服务，以及需要独立开发服务器时的前端；启动脚本检查前置条件、创建或复用本地 kind/k3d 集群、安装/等待 Dapr 和 Drasi 就绪，然后启动 Aspire AppHost。脚本不得默认删除已有集群或其数据。Aspire 的 AppHost 用于开发机，不作为 Linux 生产编排器。
+开发机采用两层编排。`Aspire.Hosting.AppHost` 13.6.0 定义并启动 API、PostgreSQL，以及需要独立开发服务器时的前端；API 通过配置连接开发机或用户控制远端的自托管模型端点。启动脚本检查前置条件、创建或复用本地 kind/k3d 集群、安装/等待 Dapr 和 Drasi 就绪，然后启动 Aspire AppHost。脚本不得默认删除已有集群或其数据。Aspire 的 AppHost 用于开发机，不作为 Linux 生产编排器。
 
 Aspire 服务与 Drasi Pod 位于不同网络边界。PostgreSQL、模型端点及 Drasi view/reaction 端点必须通过 kind/k3d Pod 可访问的地址配置，不能把仅对 AppHost 容器可见的 `localhost` 地址交给集群内服务。阶段 0 必须验证开发机到 Drasi 以及 Drasi 到其事件源/结果端点的双向连接。
 
@@ -106,14 +106,30 @@ Linux 主机用共享 Kubernetes 基础清单（例如 Kustomize）部署 API、
 ### 阶段 0：兼容性验证
 
 1. 在 kind/k3d 集群启动选定版本的 Drasi，并确认 Dapr 及 Drasi 工作负载就绪。
-2. 从 Aspire 13.6 AppHost 启动 API、PostgreSQL、本地模型服务以及前端开发服务器（若独立运行）。
+2. 从 Aspire 13.6 AppHost 启动 API、PostgreSQL 以及前端开发服务器（若独立运行）；模型可由本机或用户控制的远端自托管端点提供。
 3. 验证 Aspire 服务与 Drasi Pod 之间的网络寻址和连通性。
 4. 使用代表性 wishlist 事件，验证一条自托管输入路径和一条非 Cosmos 的结果/状态路径。
 5. 运行当前关键 Drasi 查询，并验证结果形状、顺序和去重预期。
 6. 验证 SignalR/SSE 更新能到达现有前端。
-7. 验证本地模型端点支持应用正在使用的 Agent Framework 工具调用和流式响应。
+7. 验证自托管模型端点支持应用正在使用的 Agent Framework 工具调用和流式响应。
 
 **闸门：** 七项均通过，或用户批准并记录行为变更后，才开始大范围存储/事件迁移。
+
+### 阶段 0A：并行自托管验证模式（用户批准）
+
+阶段 0 的端到端 API/实时链路需要一个可运行的自托管应用路径。为避免“先通过完整闸门才能实现闸门所需运行路径”的顺序循环，在迁移期间增加显式 `Runtime:Mode=SelfHosted` 模式；该模式与既有 Azure 模式并存。迁移期间默认行为保持不变，只有明确选择 SelfHosted 才启动该路径；配置缺失时必须显式失败，不得回退到 Azure 或内存持久化。
+
+此验证模式只实现关闭阶段 0 闸门所需的最小垂直切片：
+
+1. 现有 wishlist API 在单个 PostgreSQL 事务中写入业务事件和 outbox。
+2. Drasi PostgreSQL CDC source 读取 outbox，运行已验证的连续查询。
+3. Drasi HTTP reaction 调用 API 的 Dapr reaction handler；handler 使用 PostgreSQL notification repository 持久化结果。
+4. handler 通过现有 broadcaster 发布通知，使通知 SSE/SignalR 客户端收到实际更新。
+5. 同一自托管模式下的应用 Agent 使用标准 `IChatClient` 调用用户控制的 OpenAI-compatible 模型端点，验证工具调用及流式响应。
+
+SelfHosted 模式不得解析或启动 Cosmos Change Feed、Key Vault、Event Hubs、Azure 身份或 Azure OpenAI 服务；原 Azure 模式在阶段 0 全部通过前保持可用且不删除。Aspire 管理 API 和 PostgreSQL；Drasi 继续运行于 kind/k3d。模型 endpoint、model id 和 API key 通过 `LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 环境变量配置；密钥不得提交、写入日志或传给非用户控制的服务。
+
+该垂直切片是兼容性验证设施，不代表其他领域仓储已迁移完成。阶段 0 通过后，继续阶段 1–3 迁移其余持久化、事件、打包和部署路径。当前 Drasi 0.10.0 环境未列出 MongoDB source provider；因此本次批准的迁移目标继续使用已验证 PostgreSQL，不引入未经验证的 MongoDB→Drasi 路径。
 
 ### 阶段 1：提供者边界
 
@@ -137,6 +153,7 @@ Linux 主机用共享 Kubernetes 基础清单（例如 Kustomize）部署 API、
 6. 测试覆盖持久化、事件/outbox 行为、Drasi 查询/结果契约、客户端流式更新和本地模型集成。没有测试将进程内存状态误当作持久化存储。
 7. 自托管运行时不需要 Azure SDK 凭据、Azure 服务端点、Azure 云资源部署，也不存在隐藏的 Azure 网络调用。历史 Azure 文档可以保留，但必须标为旧路径。
 8. 启动、就绪状态、日志及部署脚本能明确指出缺少的依赖或启动失败的组件；必要组件不可用时不得报告整体部署成功。
+9. 迁移期间可显式选择 SelfHosted 验证模式；它能完成 API 写入 → PostgreSQL/outbox → Drasi → API/通知存储 → SSE/SignalR 的端到端测试，且不会解析 Azure 凭据或在配置错误时回退到 Azure/内存状态。
 
 ## 7. 主要风险与控制措施
 
