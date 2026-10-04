@@ -5,9 +5,9 @@
 
 ## 1. 目标与范围
 
-让项目能在开发者电脑和自有 Linux 主机上运行，不依赖 Azure 账户、Azure 托管服务或 Azure 凭据。保留 React 前端、.NET API 和业务流程、Drasi 连续查询、实时更新以及 AI Agent/工具调用体验。
+让项目能在开发者电脑和自有 Linux 主机上运行，不依赖 Azure 账户、Azure 托管服务或 Azure 凭据。保留 React 前端、.NET API 和业务流程、Drasi 连续查询、实时更新以及 AI Agent/工具调用体验。开发机使用 .NET Aspire 13.6 AppHost 编排应用侧服务；一条启动命令按需创建 kind/k3d 集群、部署 Drasi，再启动 Aspire。Linux 主机使用 K3s 或标准 Kubernetes 部署自托管服务。
 
-默认运行环境使用自托管组件。范围包含本地模型推理，不要求使用 Azure 或其他外部托管 AI 服务。初次部署可能需要下载容器镜像和模型权重，但正常运行时不得调用 Azure。开发机与 Linux 主机共用同一套应用及 Drasi 部署清单。开发机可通过脚本创建本地 Kubernetes 集群；Linux 部署可使用已有的 K3s 或标准 Kubernetes 集群。
+默认运行环境使用自托管组件。范围包含本地模型推理，不要求使用 Azure 或其他外部托管 AI 服务。初次部署可能需要下载容器镜像和模型权重，但正常运行时不得调用 Azure。开发机由 Aspire AppHost 定义本地服务图，Linux 主机使用 Kubernetes 部署清单；两种环境共用应用配置契约、镜像/业务代码和 Drasi 资源定义，但不要求采用相同的应用编排器。
 
 本评估不包括从现有 Azure 生产环境迁移数据、多主机高可用或指定模型/硬件的性能基准。若需保留现有云端数据，应另行明确导出、导入和切换要求。
 
@@ -17,6 +17,7 @@
 - Wishlist 和 recommendation 的变更由 Cosmos DB Change Feed 读取后发布到 Event Hubs。Drasi 也配置了 Event Hubs 数据源和 Microsoft Entra 工作负载身份。Drasi 图中还有一个将结果同步到 Cosmos 状态存储的 `SyncDaprStateStore` reaction。部分 API 路径也会直接发布事件，因此迁移前必须确认唯一、规范的事件语义及去重行为。
 - Azure OpenAI 客户端构造分布在主要依赖注册和其他 Agent/API 代码路径中，尚未统一经由一个可配置的模型提供者边界。
 - [infra/main.bicep](../../../infra/main.bicep) 会部署 Azure OpenAI、Cosmos DB、Event Hubs、Azure Container Apps、AKS、Key Vault、ACR 和 Azure Monitor。[azure.yaml](../../../azure.yaml) 与部署脚本负责编排这些 Azure 资源。仓库中有 Drasi 的 Kubernetes 清单，但没有用于启动完整本地环境的 Docker Compose 定义。
+- 当前仓库没有 Aspire AppHost 项目或 Aspire 引用。Aspire 13.6 是新增的开发编排层；kind/k3d 集群创建、Dapr/Drasi 部署仍由外部启动脚本负责，Aspire 本身不负责创建 Kubernetes 集群。
 
 相关实现和部署文件：
 
@@ -52,24 +53,22 @@
 ## 4. 推荐目标架构
 
 ```text
-浏览器
+开发机启动脚本
+  |-- 创建或复用 kind/k3d 集群 --> 在集群中安装 Dapr 和 Drasi
+  |                                  ^             |
+  |                                  |             +--> SignalR/SSE 实时更新
+  |                                  |             +--> 自托管 reaction（需验证）
+  |                                  |
+  |                                  +--> 通过可路由地址访问开发机服务
   |
-  v
-React 前端 + ASP.NET Core API
-  |                         |
-  |                         +--> 本地 OpenAI-compatible 模型服务
-  |                              （需支持工具调用和流式响应）
-  |
-  +--> PostgreSQL
-         |  应用数据和持久化事件/outbox 记录
-         |
-         +--> Drasi 兼容的自托管数据源（需通过兼容性闸门）
-                    |
-                    v
-                 Kubernetes 上的 Drasi
-                    |             |
-                    |             +--> 保持现有 SignalR/SSE 更新契约
-                    +--> 自托管结果/状态 reaction（需通过兼容性闸门）
+  +-- Aspire 13.6 AppHost
+        |-- React 前端（如独立开发服务器）
+        |-- ASP.NET Core API
+        |     |-- PostgreSQL
+        |     +-- 本地 OpenAI-compatible 模型服务
+        +-- 提供本地服务发现、连接配置和运行状态
+
+Linux 主机：K3s/标准 Kubernetes 部署 API、前端、PostgreSQL、模型服务和 Drasi
 ```
 
 ### 应用与数据
@@ -92,21 +91,29 @@ React 前端 + ASP.NET Core API
 
 ### 部署与运维
 
-使用共享 Kubernetes 基础清单（例如 Kustomize）部署 API、前端、数据库、本地模型端点及 Drasi 集成。开发者启动命令可创建本地 kind/k3d 集群；Linux 部署使用 K3s 或标准 Kubernetes 并共用这些清单。由于仓库中现有 Drasi 部署基于 Kubernetes，这一方案优先保证运行环境一致性，而不强行采用仅 Docker Compose 的设计。
+开发机采用两层编排。`Aspire.Hosting.AppHost` 13.6.0 定义并启动 API、PostgreSQL、本地模型服务，以及需要独立开发服务器时的前端；启动脚本检查前置条件、创建或复用本地 kind/k3d 集群、安装/等待 Dapr 和 Drasi 就绪，然后启动 Aspire AppHost。脚本不得默认删除已有集群或其数据。Aspire 的 AppHost 用于开发机，不作为 Linux 生产编排器。
 
-提供持久卷、就绪检查、数据库初始化/迁移、备份恢复说明和可操作日志。本地启动命令必须明确报告容器运行时、集群、模型文件或配置缺失，不得在部分服务未启动时报告整体成功。Azure Bicep/azd 文件可归档或移出默认部署路径，但不得成为构建、启动、测试或运行自托管目标的前置条件。
+Aspire 服务与 Drasi Pod 位于不同网络边界。PostgreSQL、模型端点及 Drasi view/reaction 端点必须通过 kind/k3d Pod 可访问的地址配置，不能把仅对 AppHost 容器可见的 `localhost` 地址交给集群内服务。阶段 0 必须验证开发机到 Drasi 以及 Drasi 到其事件源/结果端点的双向连接。
+
+Linux 主机用共享 Kubernetes 基础清单（例如 Kustomize）部署 API、前端、数据库、本地模型端点及 Drasi 集成。开发机和 Linux 部署共享应用配置契约和 Drasi 资源定义，但 Aspire 本地运行图与 Linux Kubernetes 清单可以不同。提供持久卷、就绪检查、数据库初始化/迁移、备份恢复说明和可操作日志。
+
+本地启动命令必须明确报告容器运行时、Aspire 13.6、kind/k3d、Dapr/Drasi、模型文件或配置缺失，不得在部分服务未启动时报告整体成功。Azure Bicep/azd 文件可归档或移出默认部署路径，但不得成为构建、启动、测试或运行自托管目标的前置条件。
+
+参考：[Aspire AppHost 本地编排](https://aspire.dev/get-started/app-host/)、[Aspire.Hosting.AppHost 13.6.0](https://www.nuget.org/packages/Aspire.Hosting.AppHost/13.6.0)。
 
 ## 5. 交付阶段与决策闸门
 
 ### 阶段 0：兼容性验证
 
-1. 在本地 Kubernetes 集群启动选定版本的 Drasi。
-2. 使用代表性 wishlist 事件，验证一条自托管输入路径和一条非 Cosmos 的结果/状态路径。
-3. 运行当前关键 Drasi 查询，并验证结果形状、顺序和去重预期。
-4. 验证 SignalR/SSE 更新能到达现有前端。
-5. 验证本地模型端点支持应用正在使用的 Agent Framework 工具调用和流式响应。
+1. 在 kind/k3d 集群启动选定版本的 Drasi，并确认 Dapr 及 Drasi 工作负载就绪。
+2. 从 Aspire 13.6 AppHost 启动 API、PostgreSQL、本地模型服务以及前端开发服务器（若独立运行）。
+3. 验证 Aspire 服务与 Drasi Pod 之间的网络寻址和连通性。
+4. 使用代表性 wishlist 事件，验证一条自托管输入路径和一条非 Cosmos 的结果/状态路径。
+5. 运行当前关键 Drasi 查询，并验证结果形状、顺序和去重预期。
+6. 验证 SignalR/SSE 更新能到达现有前端。
+7. 验证本地模型端点支持应用正在使用的 Agent Framework 工具调用和流式响应。
 
-**闸门：** 五项均通过，或用户批准并记录行为变更后，才开始大范围存储/事件迁移。
+**闸门：** 七项均通过，或用户批准并记录行为变更后，才开始大范围存储/事件迁移。
 
 ### 阶段 1：提供者边界
 
@@ -118,12 +125,12 @@ React 前端 + ASP.NET Core API
 
 ### 阶段 3：自托管打包
 
-增加共享 Kubernetes 清单、本地集群引导、Linux 部署说明、密钥和数据卷配置、就绪检查、备份恢复步骤以及完整本地集成测试配置。更新根目录和服务文档，将自托管部署作为默认路径。
+增加 Aspire 13.6 AppHost、本地启动脚本（创建/复用 kind/k3d、安装 Dapr/Drasi 并启动 AppHost）、Linux Kubernetes 清单、密钥和数据卷配置、就绪检查、备份恢复步骤以及完整本地集成测试配置。更新根目录和服务文档，将自托管部署作为默认路径。
 
 ## 6. 验收标准
 
-1. 全新开发环境只需安装文档列出的容器和本地 Kubernetes 前置条件，即可通过一条文档化命令启动完整服务；不需要 Azure 登录、Azure CLI、azd、Azure 端点变量或 Azure 资源。
-2. Linux 主机可将相同的应用和 Drasi 清单部署到 K3s 或标准 Kubernetes，不增加 Azure 托管服务。
+1. 全新开发环境安装文档列出的容器、.NET/Aspire 13.6、kubectl 和 kind 或 k3d 后，可通过一条文档化命令创建/复用集群、部署 Drasi/Dapr 并启动 Aspire AppHost；不需要 Azure 登录、Azure CLI、azd、Azure 端点变量或 Azure 资源。
+2. Linux 主机可使用 Kubernetes 清单部署相同应用代码、配置契约和 Drasi 资源到 K3s 或标准 Kubernetes，不增加 Azure 托管服务。
 3. API 写入的数据保存在 PostgreSQL，并在 API/数据库 Pod 重启后仍存在（持久卷按配置工作）。
 4. 一条代表性 wishlist 写入会被可靠记录，经 Drasi 处理并反映在相关连续查询结果中，随后通过现有实时 API 契约送达客户端。
 5. AI Agent 能使用配置的本地模型完成流式响应及所需工具调用。模型未启动或不可用时，健康检查或请求返回明确错误。
@@ -140,8 +147,10 @@ React 前端 + ASP.NET Core API
 | 当前多个事件发布路径可能产生重叠事件 | Drasi 结果重复或顺序变化 | 替换发布器之前明确规范的写入到事件链路及去重要求 |
 | 本地模型的性能与工具调用能力随模型和硬件不同 | Agent 功能退化或延迟过高 | 固定经过测试的模型/运行时配置，并在目标硬件上运行工具调用/流式集成测试 |
 | 本地 Kubernetes 和模型文件占用较多系统资源 | 开发环境比当前仅启动 API 更复杂 | 发布最低资源建议、就绪检查，以及镜像/模型下载步骤 |
+| Aspire 服务容器与 kind/k3d Pod 有独立网络边界 | Drasi 无法访问 Aspire 管理的数据库/事件端点，或 API 无法访问 Drasi | 在阶段 0 验证双向路由、端口暴露和可配置端点；禁止将容器内 `localhost` 当作集群地址 |
+| Aspire 13.6 需与 .NET SDK、PostgreSQL hosting integration 和本地模型容器兼容 | AppHost 无法复现完整开发服务图 | 精确固定 Aspire 13.6.0 依赖，建立最小 AppHost 启动/健康检查测试 |
 | 现有 Azure 部署脚本和文档让用户以为 Azure 是强制条件 | 用户继续采用旧部署路径 | 将自托管快速入门设为主路径，并将 Azure 内容标记为可选旧路径 |
 
 ## 8. 评估结论
 
-项目可以改造成不依赖 Azure 的自托管应用，但这属于高复杂度现代化改造，不是替换部署模板即可完成。最重要的工作是替换 Cosmos 专属持久化和 Change Feed 链路，同时保留 Drasi 行为。建议先验证 Drasi 兼容性，再重构存储和 AI 提供者，最后统一开发机与 Linux 主机的 Kubernetes 部署。本地模拟器可以帮助缩短部分开发反馈周期，但不满足长期自托管服务器目标。
+项目可以改造成不依赖 Azure 的自托管应用，但这属于高复杂度现代化改造，不是替换部署模板即可完成。最重要的工作是替换 Cosmos 专属持久化和 Change Feed 链路，同时保留 Drasi 行为。推荐开发机使用 Aspire 13.6 编排 API、数据库和本地模型，并由启动脚本负责创建 kind/k3d 与部署 Drasi；Linux 主机使用 Kubernetes 清单运行完整自托管服务。应先验证 Drasi 兼容性及 Aspire/集群网络，再重构存储和 AI 提供者。本地模拟器可以帮助缩短部分开发反馈周期，但不满足长期自托管服务器目标。
