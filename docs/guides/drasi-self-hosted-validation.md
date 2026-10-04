@@ -2,6 +2,10 @@
 
 The SelfHosted runtime is managed by .NET Aspire and does not require Azure, kind, Kubernetes, Dapr, or the Drasi CLI. The existing Azure runtime and deployment remain available separately.
 
+## Prerequisites
+
+Install the .NET 10 SDK and Docker before running the SelfHosted Aspire validation workflow.
+
 ## Local topology
 
 Run `dotnet run --project AppHost\AppHost.csproj` from the repository root. Aspire starts:

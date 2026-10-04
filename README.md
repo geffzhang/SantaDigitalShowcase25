@@ -15,7 +15,7 @@ Santa's Digital Elves is an event-driven demo application that detects wishlist 
 
 | Layer                | Technology                                                 |
 | -------------------- | ---------------------------------------------------------- |
-| **Backend**          | C# / .NET 9 with ASP.NET Core Minimal APIs                 |
+| **Backend**          | C# / .NET 10 with ASP.NET Core Minimal APIs                |
 | **Frontend**         | TypeScript with Vite + React                               |
 | **Database**         | Azure Cosmos DB (Azure) or PostgreSQL 18.3 (SelfHosted)    |
 | **Event Processing** | Drasi on AKS/Event Hubs (Azure) or Drasi Server/PostgreSQL CDC (SelfHosted) |
@@ -31,7 +31,7 @@ For Azure deployment, ensure you have the following installed:
 
 - **Azure CLI** (`az`) – [Install guide](https://learn.microsoft.com/cli/azure/install-azure-cli?view=azure-cli-latest&WT.mc_id=AZ-MVP-5004796)
 - **Azure Developer CLI** (`azd`) – [Install guide](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd?tabs=winget-windows%2Cbrew-mac%2Cscript-linux&pivots=os-windows&WT.mc_id=AZ-MVP-5004796)
-- **.NET SDK 9** – [Download](https://dotnet.microsoft.com/download/dotnet/9.0?WT.mc_id=AZ-MVP-5004796)
+- **.NET SDK 10** – [Download](https://dotnet.microsoft.com/download/dotnet/10.0?WT.mc_id=AZ-MVP-5004796)
 - **Node.js 18+** – [Download](https://nodejs.org/)
 - **Docker** (optional, for local container builds)
 - **kubectl** – [Install guide](https://kubernetes.io/docs/tasks/tools/)
@@ -39,7 +39,7 @@ For Azure deployment, ensure you have the following installed:
 
 ## 🧰 Run SelfHosted locally (no Azure or kind)
 
-The Aspire AppHost starts the API, PostgreSQL 18.3, standalone Drasi Server 0.2.3, and the Vite frontend. Docker, the .NET 9 SDK, and Node.js 18+ are required. This path does not require Azure credentials, `kind`, Kubernetes, Dapr, or the Drasi CLI; the Azure runtime remains available below.
+The Aspire AppHost starts the API, PostgreSQL 18.3, standalone Drasi Server 0.2.3, and the Vite frontend. Docker, the .NET 10 SDK, and Node.js 18+ are required. This path does not require Azure credentials, `kind`, Kubernetes, Dapr, or the Drasi CLI; the Azure runtime remains available below.
 
 Configure the user-controlled OpenAI-compatible model endpoint and the local PostgreSQL password as AppHost user secrets. Do not put secret values in the repository:
 
@@ -108,7 +108,7 @@ Start-Process "https://$apiUrl"
 
 ```
 SantaDigitalShowcae25/
-├── src/                    # .NET 9 backend API
+├── src/                    # .NET 10 backend API
 │   ├── Middleware/         # ASP.NET Core middleware
 │   ├── Realtime/           # Real-time event handling
 │   ├── lib/                # Shared libraries
@@ -286,5 +286,5 @@ This project is provided as a demo/sample application for the Festive Tech Calen
 - [Drasi Documentation](https://drasi.io/docs/)
 - [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/)
 - [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/)
-- [.NET 9 Documentation](https://learn.microsoft.com/dotnet/core/whats-new/dotnet-9)
+- [.NET 10 Documentation](https://learn.microsoft.com/dotnet/core/whats-new/dotnet-10/overview)
 - [Festive Tech Calendar](https://festivetechcalendar.com/)
