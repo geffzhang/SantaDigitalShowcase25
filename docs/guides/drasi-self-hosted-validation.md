@@ -1,41 +1,49 @@
-# Drasi 自托管兼容性验证
+# Drasi SelfHosted validation
 
-**状态：候选 source/reaction smoke test 通过；完整发布闸门未通过。**
+The SelfHosted runtime is managed by .NET Aspire and does not require Azure, kind, Kubernetes, Dapr, or the Drasi CLI. The existing Azure runtime and deployment remain available separately.
 
-## 已验证环境
+## Local topology
 
-以下验证在隔离的 kind 集群 `santa-local` 中进行，使用独立 kubeconfig；未修改原有 Kubernetes context。
+Run `dotnet run --project AppHost\AppHost.csproj` from the repository root. Aspire starts:
 
-| 组件 | 版本或镜像 |
+| Component | Version or endpoint |
 | --- | --- |
-| kind | v0.33.0 |
-| Kubernetes 节点 | v1.37.0 |
-| Drasi CLI 与控制平面 | v0.10.0 |
-| Drasi source/query/reaction 镜像 | `ghcr.io/drasi-project/*:0.10.0` |
-| Dapr | v1.14.5 |
-| PostgreSQL smoke-test source | `postgres:16-alpine` |
+| API | `http://localhost:8081` |
+| PostgreSQL | `postgres:18.3`, host port `5433` |
+| Drasi Server | `ghcr.io/drasi-project/drasi-server:0.2.3`, `http://localhost:8080` |
+| PostgreSQL source plugin | `source/postgres:0.2.10` |
+| PostgreSQL bootstrap plugin | `bootstrap/postgres:0.2.13` |
+| HTTP reaction plugin | `reaction/http:0.3.3` |
+| Frontend | Aspire-managed Vite development server |
 
-## 已通过的候选验证
+Published host ports bind to loopback. Containers communicate over the Aspire resource network. PostgreSQL uses a persistent volume; the configured major version is 18.3 to retain PostgreSQL 18 data.
 
-1. 在 PostgreSQL 16 中启用 logical WAL，并创建含主键的 `wishlist_events` 表。
-2. Drasi PostgreSQL CDC source `wishlist-smoke` 成为 available。
-3. 连续查询 `wishlist-updates-smoke` 进入 Running，返回 `id`、`childId`、`text`、`type`、`dedupeKey` 和 `createdAt` 字段。
-4. 插入唯一 smoke-test 记录后，`drasi watch wishlist-updates-smoke` 返回对应数据。
-5. Drasi HTTP reaction `wishlist-smoke-http` 成为 available，并订阅该 query。插入新记录后，reaction 将模板渲染为 JSON，并向集群内 HTTP receiver 发出 POST，接收端返回 HTTP 200。例如验证到的请求体为：
+## Configuration
 
-   ```json
-   {"id":"smoke-event-6","childId":"child-6","text":"Payload validation card","type":"wishlist","dedupeKey":"dedupe-smoke-6"}
-   ```
+Configure a user-controlled OpenAI-compatible model endpoint and local PostgreSQL password as AppHost user secrets. Never commit or print secret values:
 
-## 尚未验证及发布阻塞项
+```powershell
+dotnet user-secrets set "LLM_BASE_URL" "https://<your-model-host>/v1" --project AppHost
+dotnet user-secrets set "LLM_MODEL_NAME" "<model-name>" --project AppHost
+dotnet user-secrets set "LLM_API_KEY" "<model-api-key>" --project AppHost
+dotnet user-secrets set "Parameters:postgres-password" "<local-postgres-password>" --project AppHost
+```
 
-- HTTP reaction 目前投递到临时 smoke-test receiver；尚未验证真实应用 API 的接收、SSE 或 SignalR 客户端事件链。
-- 尚未完成 Aspire 与 kind Pod 之间的双向网络连通测试。
-- 用户控制的 OpenAI-compatible 自托管远端模型已通过通用 tool-call 探测（模型调用函数并返回预期的 `42`）及 HTTP 200 SSE 流式探测（收到内容增量和正常 `finish_reason`）。尚未验证项目内 Agent Framework 的接线或真实 API 流。
-- 此测试使用独立的 PostgreSQL smoke-test 表，不代表应用仓储、事务 outbox 或生产 Drasi manifests 已迁移完成。
+The SelfHosted API applies its EF migrations before it is ready. A migration creates the `drasi_wishlist_events` PostgreSQL publication for `public.wishlist_events`; PostgreSQL logical WAL, the publication, and the replication slot are required for Drasi CDC. Drasi Server consumes only that outbox table, runs the configured queries, and posts HTTP reactions to the API.
 
-因此，本结果只证明 Drasi 0.10.0 的 PostgreSQL CDC 候选 source、查询和 HTTP reaction 能在该 kind 环境中工作；不得据此移除 Cosmos DB/Event Hubs 路径或宣称完整自托管发布闸门通过。后续步骤和停止条件见[自托管数据与 Drasi 实施计划](../superpowers/plans/2026-10-04-selfhosted-data-drasi.md)及[Aspire/kind 开发计划](../superpowers/plans/2026-10-04-aspire-kind-development.md)。
+## Validation
 
-## MongoDB 候选检查
+Run the contract tests, live smoke, and .NET suite:
 
-2026-10-04 在同一 Drasi 0.10.0 kind 环境运行 `drasi list sourceprovider -n drasi-system`，实际可用 source provider 为 `PostgreSQL`、`MySQL`、`SQLServer`、`CosmosGremlin`、`Dataverse`、`EventHub` 和 `Kubernetes`；其中没有 MongoDB provider。因此，MongoDB Change Streams 不能直接配置为当前已安装 Drasi 的原生 source。此检查不排除开发或安装自定义 Drasi source adapter，但在该适配器经过验证前，MongoDB → Drasi 的候选链路为 **Blocked**。
+```powershell
+Invoke-Pester -Script tests\scripts\DrasiServerConfig.Tests.ps1 -EnableExit
+Invoke-Pester -Script tests\scripts\validate-selfhosted-drasi.Tests.ps1 -EnableExit
+.\tests\scripts\validate-selfhosted-drasi.ps1
+dotnet test tests\Tests.csproj --no-restore
+```
+
+The smoke script checks API and Drasi health, waits for `wishlist-updates`, opens the child notification SSE request, and submits one uniquely keyed gift wishlist item. It passes only when the same child and text appear in Drasi query results and in an SSE `notification`; the reaction handler persists the notification before publishing it. It returns a nonzero exit code and identifies the failed endpoint or assertion on failure.
+
+**Last verified:** 2026-10-04. The live smoke passed with the default timeout; the matching wishlist event appeared in Drasi results and SSE, and a direct PostgreSQL check confirmed the reaction's matching notification row. All seven configured query result endpoints returned successful envelopes. AppHost build completed with 0 warnings and 0 errors; the .NET suite passed 108 tests with 2 skipped; the combined Pester suites passed 17 tests. The .NET integration tests cover persistence-before-acknowledgement plus SSE and SignalR broadcasting.
+
+Run the commands above after changes; a successful build alone is not evidence of the live CDC path.

@@ -4,6 +4,7 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using Polly;
 using Persistence;
 
 namespace Services;
@@ -42,6 +43,7 @@ public static class RuntimeServiceRegistration
         IConfiguration configuration)
     {
         services.AddRuntimeStreamServices();
+        AddDrasiHttpClient<DrasiViewClient>(services);
         services.AddSingleton<ISecretProvider, KeyVaultSecretProvider>();
         services.AddSingleton<CosmosSetup>();
 
@@ -142,13 +144,37 @@ public static class RuntimeServiceRegistration
         }
 
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddHostedService<SelfHostedDatabaseMigrationService>();
+        AddDrasiHttpClient<DrasiServerViewClient>(services);
         services.AddScoped<IWishlistRepository, PostgresWishlistRepository>();
         services.AddScoped<IProfileSnapshotRepository, PostgresProfileSnapshotRepository>();
         services.AddScoped<IRecommendationRepository, PostgresRecommendationRepository>();
+        services.AddScoped<ILogisticsAssessmentRepository, PostgresLogisticsAssessmentRepository>();
         services.AddScoped<INotificationRepository, PostgresNotificationRepository>();
         services.AddChatClientForRuntime(configuration, RuntimeMode.SelfHosted);
         services.AddRuntimeStreamServices();
         return services;
+    }
+
+    private static void AddDrasiHttpClient<TImplementation>(IServiceCollection services)
+        where TImplementation : class, IDrasiViewClient
+    {
+        services.AddHttpClient<IDrasiViewClient, TImplementation>(
+                client => client.Timeout = TimeSpan.FromSeconds(30))
+            .AddStandardResilienceHandler(options =>
+            {
+                options.Retry.MaxRetryAttempts = 3;
+                options.Retry.Delay = TimeSpan.FromSeconds(1);
+                options.Retry.BackoffType = DelayBackoffType.Exponential;
+                options.Retry.UseJitter = true;
+
+                options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(20);
+
+                options.CircuitBreaker.FailureRatio = 0.5;
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(45);
+                options.CircuitBreaker.MinimumThroughput = 5;
+                options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(15);
+            });
     }
 
     private static IServiceCollection AddRuntimeStreamServices(this IServiceCollection services)

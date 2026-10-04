@@ -86,24 +86,6 @@ builder.Services.AddOptions<ElfRecommendationAgentOptions>()
     .Bind(builder.Configuration.GetSection("ElfAgents:Recommendation"));
 builder.Services.AddApplicationRuntime(builder.Configuration);
 
-// Drasi integration - HttpClient for view service queries with Polly resilience
-builder.Services.AddHttpClient<IDrasiViewClient, DrasiViewClient>(client => client.Timeout = TimeSpan.FromSeconds(30))
-    .AddStandardResilienceHandler(options =>
-    {
-        options.Retry.MaxRetryAttempts = 3;
-        options.Retry.Delay = TimeSpan.FromSeconds(1);
-        options.Retry.BackoffType = DelayBackoffType.Exponential;
-        options.Retry.UseJitter = true;
-
-        options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(20);
-
-        options.CircuitBreaker.FailureRatio = 0.5;
-        // SamplingDuration must be at least 2x AttemptTimeout (20s * 2 = 40s minimum)
-        options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(45);
-        options.CircuitBreaker.MinimumThroughput = 5;
-        options.CircuitBreaker.BreakDuration = TimeSpan.FromSeconds(15);
-    });
-
 // Register Drasi health check
 builder.Services.AddHealthChecks()
     .AddCheck<DrasiHealthCheck>(
@@ -539,8 +521,12 @@ app.MapGet("/readyz", async (IMetricsService m, HealthCheckService healthCheckSe
 app.MapGet("/livez", () => Results.Ok(new { status = "live" }))
     .WithTags("Infrastructure", "Health");
 // Lightweight diagnostics (independent of versioned groups)
-app.MapGet("/api/pingz", (CosmosClient? cosmos) => Results.Ok(new { status = "ok", cosmosReady = cosmos is not null, time = DateTime.UtcNow }))
-    .WithTags("Debug", "Diagnostics");
+if (app.Services.GetRequiredService<RuntimeModeOptions>().Mode == RuntimeMode.Azure)
+{
+    app.MapGet("/api/pingz", (CosmosClient? cosmos) =>
+            Results.Ok(new { status = "ok", cosmosReady = cosmos is not null, time = DateTime.UtcNow }))
+        .WithTags("Debug", "Diagnostics");
+}
 
 // API index + version metadata
 IReadOnlyList<string> ApiResources() =>
@@ -552,16 +538,22 @@ app.MapGet("/api/version", () => Results.Ok(new { semantic = "1.0.0", deprecated
 
 // Versioned feature endpoints under /api/v1 (Azure API Guidelines compliant)
 var v1 = app.MapGroup("/api/v1");
-v1.MapJobsApi();
+if (app.Services.GetRequiredService<RuntimeModeOptions>().Mode == RuntimeMode.Azure)
+{
+    v1.MapJobsApi();
+    v1.MapChildrenApi();
+}
 v1.MapReportsApi();
-v1.MapChildrenApi();
 v1.MapAgUi();
 v1.MapElfAgentsApi();
 v1.MapEnhancedAgentApi();
 v1.MapOrchestratorApi();
 v1.MapDrasiStreamApi();
 v1.MapDrasiInsightsApi();
-v1.MapHistoricalTrendsApi();
+if (app.Services.GetRequiredService<RuntimeModeOptions>().Mode == RuntimeMode.Azure)
+{
+    v1.MapHistoricalTrendsApi();
+}
 v1.MapCopilotChatApi();
 v1.MapDrasiDaprSubscriptions();
 v1.MapGet("ping", () => Results.Ok(new { status = "ok" }))
@@ -858,27 +850,34 @@ v1.MapPost("children/{childId}/wishlist-items", async (string childId, HttpReque
 });
 
 // DEBUG: Test endpoint to diagnose change feed processor
-app.MapGet("/api/debug/changefeed-test", async (ICosmosRepository cosmos, IEventPublisher publisher, IConfiguration config, ILogger<Program> logger) =>
+if (app.Services.GetRequiredService<RuntimeModeOptions>().Mode == RuntimeMode.Azure)
 {
-    try
+    app.MapGet("/api/debug/changefeed-test", async (
+        ICosmosRepository cosmos,
+        IEventPublisher publisher,
+        IConfiguration config,
+        ILogger<Program> logger) =>
     {
-        logger.LogInformation("🔍 Testing change feed processor initialization");
-        string wish = config["Cosmos:Containers:Wishlists"] ?? "wishlists";
-        string leases = config["Cosmos:Containers:Leases"] ?? "leases";
-        logger.LogInformation("📦 Container names: wishlists={Wish}, leases={Leases}", wish, leases);
+        try
+        {
+            logger.LogInformation("🔍 Testing change feed processor initialization");
+            string wish = config["Cosmos:Containers:Wishlists"] ?? "wishlists";
+            string leases = config["Cosmos:Containers:Leases"] ?? "leases";
+            logger.LogInformation("📦 Container names: wishlists={Wish}, leases={Leases}", wish, leases);
 
-        var monitored = cosmos.GetContainer(wish);
-        var lease = cosmos.GetContainer(leases);
-        logger.LogInformation("✅ Got container references");
+            var monitored = cosmos.GetContainer(wish);
+            var lease = cosmos.GetContainer(leases);
+            logger.LogInformation("✅ Got container references");
 
-        return Results.Ok(new { status = "Containers accessible", wishlists = wish, leases });
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "❌ Change feed test failed");
-        return Results.Problem(detail: ex.ToString());
-    }
-});
+            return Results.Ok(new { status = "Containers accessible", wishlists = wish, leases });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "❌ Change feed test failed");
+            return Results.Problem(detail: ex.ToString());
+        }
+    });
+}
 
 // Configure Kestrel to listen on http://localhost:8080 if not already specified
 var urls = Drasicrhsit.Infrastructure.ConfigurationHelper.GetOptionalValue(

@@ -25,7 +25,10 @@ public sealed class PostgresWishlistRepository(AppDbContext db) : IWishlistRepos
             Id = entity.id,
             ChildId = entity.ChildId,
             Text = entity.Text,
+            Category = entity.Category,
+            BudgetEstimate = entity.BudgetEstimate,
             Type = entity.RequestType,
+            StatusChange = entity.StatusChange,
             DedupeKey = entity.DedupeKey,
             CreatedAt = entity.CreatedAt
         });

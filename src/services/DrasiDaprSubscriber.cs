@@ -35,85 +35,167 @@ public static class DrasiDaprSubscriber
         })
         .WithName("DaprSubscribe");
 
-        // Per-topic handlers (CloudEvents: { id, source, type, data, ... })
-        app.MapPost("dapr/drasi/{queryId}", async (
-            string queryId,
-            HttpRequest req,
-            IStreamBroadcaster broadcaster,
-            INotificationRepository notifications,
-            ILoggerFactory loggerFactory,
-            CancellationToken ct) =>
-        {
-            var logger = loggerFactory.CreateLogger("DrasiDaprSubscriber");
-            try
-            {
-                using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
-                var root = doc.RootElement;
+        app.MapPost("dapr/drasi/{queryId}", HandleReactionAsync)
+            .WithName("DrasiDaprTopicHandler");
 
-                // CloudEvent payload: data contains packed ChangeEvent
-                if (!root.TryGetProperty("data", out var data))
-                {
-                    logger.LogWarning("CloudEvent missing data for query {QueryId}", queryId);
-                    return Results.Accepted();
-                }
-
-                // Try to extract childId if present in projection
-                string childId = data.TryGetProperty("childId", out var childProp) ? (childProp.GetString() ?? "unknown") : "unknown";
-                string message = BuildMessage(queryId, data);
-
-                var entity = new NotificationEntity
-                {
-                    ChildId = childId,
-                    Type = MapType(queryId),
-                    Message = message,
-                    RelatedId = null,
-                    State = "unread"
-                };
-
-                // Persist for history and initial fetch API
-                await notifications.StoreAsync(entity);
-
-                // Broadcast to child stream; UI shows immediately via SSE
-                var json = JsonSerializer.Serialize(new { entity.id, entity.Type, entity.Message, entity.RelatedId, entity.State, timestamp = DateTime.UtcNow.ToString("o") });
-                await broadcaster.PublishAsync(childId, "notification", json);
-
-                return Results.Accepted();
-            }
-            catch (Exception ex)
-            {
-                logger!.LogError(ex, "Failed to process Dapr message for query {QueryId}", queryId);
-                return Results.Accepted(); // swallow to avoid redeliver storms
-            }
-        })
-        .WithName("DrasiDaprTopicHandler");
+        app.MapPost("drasi/reactions/{queryId}", HandleReactionAsync)
+            .WithName("DrasiServerReactionHandler");
 
         return app;
     }
 
+    private static async Task<IResult> HandleReactionAsync(
+        string queryId,
+        HttpRequest req,
+        IStreamBroadcaster broadcaster,
+        INotificationRepository notifications,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        var logger = loggerFactory.CreateLogger("DrasiReactionHandler");
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+            var root = doc.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Object)
+            {
+                logger.LogWarning(
+                    "Reaction for query {QueryId} was rejected with status {StatusCode}: missing or invalid data",
+                    queryId,
+                    StatusCodes.Status400BadRequest);
+                return Results.BadRequest();
+            }
+
+            string childId;
+            string message;
+            if (queryId == "wishlist-updates")
+            {
+                if (!TryGetNonEmptyString(data, "childId", out childId) ||
+                    !TryGetNonEmptyString(data, "text", out var text))
+                {
+                    logger.LogWarning(
+                        "Reaction for query {QueryId} was rejected with status {StatusCode}: invalid wishlist data",
+                        queryId,
+                        StatusCodes.Status400BadRequest);
+                    return Results.BadRequest();
+                }
+
+                message = $"Wishlist update: {text}";
+            }
+            else
+            {
+                childId = queryId is "wishlist-duplicates-by-child" or "wishlist-inactive-children-3d"
+                    ? GetRequiredString(data, "childId")
+                    : TryGetNonEmptyString(data, "childId", out var projectedChildId)
+                        ? projectedChildId
+                        : "unknown";
+                message = BuildMessage(queryId, data);
+            }
+
+            var entity = new NotificationEntity
+            {
+                ChildId = childId,
+                Type = MapType(queryId),
+                Message = message,
+                RelatedId = null,
+                State = "unread"
+            };
+
+            await notifications.StoreAsync(entity);
+
+            await broadcaster.PublishAsync(childId, "notification", new
+            {
+                entity.id,
+                childId = entity.ChildId,
+                type = entity.Type,
+                message = entity.Message,
+                relatedId = entity.RelatedId,
+                state = entity.State,
+                timestamp = entity.CreatedAt.ToString("o")
+            }, ct);
+
+            return Results.Accepted();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (JsonException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Reaction for query {QueryId} was rejected with status {StatusCode}: invalid JSON data",
+                queryId,
+                StatusCodes.Status400BadRequest);
+            return Results.BadRequest();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                ex,
+                "Failed to process reaction for query {QueryId}; returning status {StatusCode}",
+                queryId,
+                StatusCodes.Status500InternalServerError);
+            return Results.StatusCode(StatusCodes.Status500InternalServerError);
+        }
+    }
+
     private static string MapType(string queryId) => queryId switch
     {
+        "wishlist-updates" => "wishlist",
         "wishlist-trending-1h" => "wishlist",
         "wishlist-duplicates-by-child" => "recommendation",
         "wishlist-inactive-children-3d" => "behavior",
         _ => "info"
     };
 
-    private static string BuildMessage(string queryId, JsonElement data)
+    private static bool TryGetNonEmptyString(JsonElement element, string name, out string value)
     {
-        // Create a concise message per query
-        try
+        value = string.Empty;
+        if (!element.TryGetProperty(name, out var property) ||
+            property.ValueKind != JsonValueKind.String)
         {
-            return queryId switch
-            {
-                "wishlist-trending-1h" =>
-                    $"Trending update: {(data.TryGetProperty("item", out var item) ? item.GetString() : "Unknown")} ({(data.TryGetProperty("frequency", out var freq) ? freq.GetInt32() : 0)})",
-                "wishlist-duplicates-by-child" =>
-                    $"Duplicate wishlist item detected: {(data.TryGetProperty("item", out var item2) ? item2.GetString() : "Unknown")}",
-                "wishlist-inactive-children-3d" =>
-                    $"Inactive child detected: {(data.TryGetProperty("childId", out var c) ? c.GetString() : "Unknown")}",
-                _ => $"Drasi update for {queryId}"
-            };
+            return false;
         }
-        catch { return $"Drasi update for {queryId}"; }
+
+        var candidate = property.GetString();
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        value = candidate;
+        return true;
     }
+
+    private static string GetRequiredString(JsonElement element, string name) =>
+        TryGetNonEmptyString(element, name, out var value)
+            ? value
+            : throw new JsonException($"CloudEvent data requires a non-empty string '{name}'.");
+
+    private static int GetRequiredInt32(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var property) ||
+            property.ValueKind != JsonValueKind.Number ||
+            !property.TryGetInt32(out var value))
+        {
+            throw new JsonException($"CloudEvent data requires an integer '{name}'.");
+        }
+
+        return value;
+    }
+
+    private static string BuildMessage(string queryId, JsonElement data) => queryId switch
+    {
+        "wishlist-trending-1h" =>
+            $"Trending update: {GetRequiredString(data, "item")} ({GetRequiredInt32(data, "frequency")})",
+        "wishlist-duplicates-by-child" =>
+            $"Duplicate wishlist item detected: {GetRequiredString(data, "item")}",
+        "wishlist-inactive-children-3d" =>
+            $"Inactive child detected: {GetRequiredString(data, "childId")}",
+        _ => $"Drasi update for {queryId}"
+    };
 }

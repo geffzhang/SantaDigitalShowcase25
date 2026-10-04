@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Persistence;
@@ -11,9 +12,11 @@ using Persistence;
 namespace src.persistence.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261004050349_SelfHostedLogisticsAssessments")]
+    partial class SelfHostedLogisticsAssessments
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -28,14 +31,6 @@ namespace src.persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("id");
-
-                    b.Property<double?>("BudgetEstimate")
-                        .HasColumnType("double precision")
-                        .HasColumnName("budget_estimate");
-
-                    b.Property<string>("Category")
-                        .HasColumnType("text")
-                        .HasColumnName("category");
 
                     b.Property<string>("ChildId")
                         .IsRequired()
@@ -52,11 +47,6 @@ namespace src.persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
                         .HasColumnName("dedupe_key");
-
-                    b.Property<string>("StatusChange")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("status_change");
 
                     b.Property<string>("Text")
                         .IsRequired()

@@ -37,7 +37,10 @@ internal sealed class WishlistOutboxEventConfiguration : IEntityTypeConfiguratio
         builder.Property(entity => entity.Id).HasColumnName("id").HasMaxLength(64);
         builder.Property(entity => entity.ChildId).HasColumnName("child_id").HasMaxLength(128).IsRequired();
         builder.Property(entity => entity.Text).HasColumnName("text").IsRequired();
+        builder.Property(entity => entity.Category).HasColumnName("category");
+        builder.Property(entity => entity.BudgetEstimate).HasColumnName("budget_estimate");
         builder.Property(entity => entity.Type).HasColumnName("type").HasMaxLength(64).IsRequired();
+        builder.Property(entity => entity.StatusChange).HasColumnName("status_change").HasMaxLength(64);
         builder.Property(entity => entity.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(256).IsRequired();
         builder.Property(entity => entity.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.HasIndex(entity => new { entity.ChildId, entity.CreatedAt })
@@ -89,6 +92,35 @@ internal sealed class RecommendationSetConfiguration : IEntityTypeConfiguration<
         builder.Ignore(entity => entity.PartitionKeyValue);
         builder.HasIndex(entity => new { entity.ChildId, entity.CreatedAt })
             .HasDatabaseName("ix_recommendations_child_id_created_at");
+    }
+}
+
+internal sealed class LogisticsAssessmentConfiguration : IEntityTypeConfiguration<LogisticsAssessmentEntity>
+{
+    public void Configure(EntityTypeBuilder<LogisticsAssessmentEntity> builder)
+    {
+        builder.ToTable("logistics_assessments");
+        builder.HasKey(entity => entity.id);
+        builder.Property(entity => entity.id).HasColumnName("id").HasMaxLength(64);
+        builder.Property(entity => entity.ChildId).HasColumnName("child_id").HasMaxLength(128).IsRequired();
+        builder.Property(entity => entity.RecommendationSetId)
+            .HasColumnName("recommendation_set_id")
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(entity => entity.CheckedAt).HasColumnName("checked_at").IsRequired();
+        builder.Property(entity => entity.OverallStatus)
+            .HasColumnName("overall_status")
+            .HasMaxLength(64)
+            .IsRequired();
+        builder.Property(entity => entity.FallbackUsed).HasColumnName("fallback_used").IsRequired();
+        var items = builder.Property(entity => entity.Items)
+            .HasColumnName("items")
+            .HasColumnType("jsonb")
+            .HasConversion(JsonValueConverters.CreateConverter<LogisticsAssessmentItemEntity>());
+        items.Metadata.SetValueComparer(JsonValueConverters.CreateComparer<LogisticsAssessmentItemEntity>());
+        builder.Ignore(entity => entity.PartitionKeyValue);
+        builder.HasIndex(entity => new { entity.ChildId, entity.CheckedAt })
+            .HasDatabaseName("ix_logistics_assessments_child_id_checked_at");
     }
 }
 

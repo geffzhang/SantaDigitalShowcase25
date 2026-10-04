@@ -1,6 +1,6 @@
 # 🎅 Santa's Digital Elves – Wishlist Detection & Gift Report
 
-Santa's Digital Elves is an event-driven demo application that detects wishlist and profile updates from children, processes them using real-time event streaming with [Drasi](https://drasi.io/), and generates intelligent "Naughty & Nice Gift Reports" using Azure AI.
+Santa's Digital Elves is an event-driven demo application that detects wishlist and profile updates with [Drasi](https://drasi.io/) and generates intelligent gift recommendations. It supports both its Azure deployment and a SelfHosted local runtime managed by .NET Aspire.
 
 [Video - Santa's Digital Showcase (Drasi + Microsoft Agent Framework)](https://youtu.be/3G7Dg_VI27M)
 
@@ -8,8 +8,8 @@ Santa's Digital Elves is an event-driven demo application that detects wishlist 
 
 - **Real-time Event Detection**: Uses Drasi for continuous query processing on event streams
 - **Wishlist Management**: Children can submit and update their Christmas wishlists
-- **AI-Powered Analysis**: Azure OpenAI generates gift recommendations and behavior insights
-- **Modern Architecture**: .NET 9 backend, React frontend, Azure Container Apps, and Drasi on AKS
+- **AI-Powered Analysis**: Azure OpenAI in Azure deployments, or a user-controlled OpenAI-compatible model endpoint in SelfHosted mode
+- **Two runtime options**: Azure Container Apps and Drasi on AKS, or .NET Aspire with PostgreSQL and standalone Drasi Server
 
 ## 🛠️ Technology Stack
 
@@ -17,17 +17,17 @@ Santa's Digital Elves is an event-driven demo application that detects wishlist 
 | -------------------- | ---------------------------------------------------------- |
 | **Backend**          | C# / .NET 9 with ASP.NET Core Minimal APIs                 |
 | **Frontend**         | TypeScript with Vite + React                               |
-| **Database**         | Azure Cosmos DB (Core/NoSQL)                               |
-| **Event Processing** | Drasi for real-time event detection, Azure Event Hubs      |
-| **AI Framework**     | Azure OpenAI with Microsoft Agent Framework (.NET preview) |
-| **Infrastructure**   | Azure Container Apps, Azure Key Vault, AKS for Drasi       |
+| **Database**         | Azure Cosmos DB (Azure) or PostgreSQL 18.3 (SelfHosted)    |
+| **Event Processing** | Drasi on AKS/Event Hubs (Azure) or Drasi Server/PostgreSQL CDC (SelfHosted) |
+| **AI Framework**     | Azure OpenAI or a user-controlled OpenAI-compatible endpoint |
+| **Infrastructure**   | Azure Container Apps/Key Vault/AKS or .NET Aspire/Docker   |
 | **Scripting**        | PowerShell for deployment and automation                   |
 
 ![🎅 Santa's Workshop Dashboard](overview.jpg)
 
 ## 📋 Prerequisites
 
-Before you begin, ensure you have the following installed:
+For Azure deployment, ensure you have the following installed:
 
 - **Azure CLI** (`az`) – [Install guide](https://learn.microsoft.com/cli/azure/install-azure-cli?view=azure-cli-latest&WT.mc_id=AZ-MVP-5004796)
 - **Azure Developer CLI** (`azd`) – [Install guide](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd?tabs=winget-windows%2Cbrew-mac%2Cscript-linux&pivots=os-windows&WT.mc_id=AZ-MVP-5004796)
@@ -36,6 +36,34 @@ Before you begin, ensure you have the following installed:
 - **Docker** (optional, for local container builds)
 - **kubectl** – [Install guide](https://kubernetes.io/docs/tasks/tools/)
 - **Drasi CLI** – [Install guide](https://drasi.io/)
+
+## 🧰 Run SelfHosted locally (no Azure or kind)
+
+The Aspire AppHost starts the API, PostgreSQL 18.3, standalone Drasi Server 0.2.3, and the Vite frontend. Docker, the .NET 9 SDK, and Node.js 18+ are required. This path does not require Azure credentials, `kind`, Kubernetes, Dapr, or the Drasi CLI; the Azure runtime remains available below.
+
+Configure the user-controlled OpenAI-compatible model endpoint and the local PostgreSQL password as AppHost user secrets. Do not put secret values in the repository:
+
+```powershell
+dotnet user-secrets set "LLM_BASE_URL" "https://<your-model-host>/v1" --project AppHost
+dotnet user-secrets set "LLM_MODEL_NAME" "<model-name>" --project AppHost
+dotnet user-secrets set "LLM_API_KEY" "<model-api-key>" --project AppHost
+dotnet user-secrets set "Parameters:postgres-password" "<local-postgres-password>" --project AppHost
+```
+
+Start the complete local stack:
+
+```powershell
+dotnet run --project AppHost\AppHost.csproj
+```
+
+The default loopback endpoints are API `http://localhost:8081`, PostgreSQL `localhost:5433`, and Drasi Server `http://localhost:8080`. PostgreSQL uses a persistent Aspire data volume. To validate the live PostgreSQL CDC → Drasi query → HTTP reaction → persisted notification → SSE path, run:
+
+```powershell
+Invoke-Pester -Script tests\scripts\DrasiServerConfig.Tests.ps1 -EnableExit
+Invoke-Pester -Script tests\scripts\validate-selfhosted-drasi.Tests.ps1 -EnableExit
+.\tests\scripts\validate-selfhosted-drasi.ps1
+dotnet test tests\Tests.csproj --no-restore
+```
 
 ## 🚀 Quick Start Deployment
 

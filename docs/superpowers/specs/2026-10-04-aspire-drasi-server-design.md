@@ -37,7 +37,7 @@ PostgreSQL 必须启用 logical WAL、足够的 replication slots 与 WAL sender
 
 ## 4. 数据流与应用边界
 
-1. SelfHosted API 在同一 PostgreSQL 事务中写入 wishlist 记录和 append-only outbox event。
+1. SelfHosted API 在同一 PostgreSQL 事务中写入 wishlist 记录和 append-only outbox event。Outbox 保留查询及 reaction 所需的 `category`、`budget_estimate`、`status_change` 元数据，以及 child、text、type、dedupe key 和创建时间；新增字段允许为空，以兼容既有 outbox 行。
 2. Drasi Server PostgreSQL source 通过 CDC 读取 outbox 表；source 的表名、主键和 bootstrap 行为显式配置。
 3. Drasi Server 运行项目 SelfHosted 使用的 wishlist 更新、趋势、重复项、非活跃用户及行为/推荐查询。当前查询定义见 [Drasi resource 文件](../../../drasi/resources/drasi-resources.yaml)；旧 Kubernetes/Drasi Platform 查询语法需迁移到 Drasi Server 配置，并逐项验证结果字段及时间语义。
 4. 对应 HTTP reaction 使用明确的 JSON body template 调用 SelfHosted API。API 验证事件数据，先持久化 notification，持久化成功后才返回成功确认并发布 SSE/SignalR 事件。

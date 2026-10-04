@@ -1,0 +1,19 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.0">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>c6b772de-50f3-44ca-98de-689ef5410456</UserSecretsId>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AppHost" Version="13.6.0" />
+    <PackageReference Include="Aspire.Hosting.Docker" Version="13.6.0" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.6.0" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.6.0" />
+  </ItemGroup>
+
+</Project>

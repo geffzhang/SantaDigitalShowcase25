@@ -1,12 +1,14 @@
 # SelfHosted 阶段 0A 验证模式实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **架构更新（2026-10-04）：** 本计划早期的 kind/Dapr 网络步骤已由独立 Aspire 拓扑取代。当前 SelfHosted 路径由 Aspire 单独启动 API、PostgreSQL、Drasi Server 和前端，不要求 kind、Kubernetes 或 Dapr；请以[当前 Aspire/Drasi 计划](2026-10-04-aspire-drasi-server.md)和[验证指南](../../../guides/drasi-self-hosted-validation.md)为准。以下 kind 相关步骤仅保留为历史计划，不再作为当前实施要求。
 
 **Goal:** 在不删除现有 Azure 路径的前提下，新增可选的 SelfHosted runtime，让真实 wishlist API、PostgreSQL/outbox、Drasi、通知 API 及 SSE/SignalR 形成可验证的端到端链路。
 
-**Architecture:** `Runtime:Mode=Azure` 在迁移期间保持默认并继续使用当前注册；显式选择 `Runtime:Mode=SelfHosted` 时，API 改用 PostgreSQL 持久化与标准 OpenAI-compatible `IChatClient`，并跳过 Cosmos、Key Vault、Event Hubs 和 Azure OpenAI 服务。Aspire 启动 API/PostgreSQL，Drasi/Dapr 运行在 kind；模型服务由用户控制，可在开发机或远端主机运行。
+**Architecture:** `Runtime:Mode=Azure` 保持既有服务注册与部署；显式选择 `Runtime:Mode=SelfHosted` 时，API 使用 PostgreSQL 持久化与标准 OpenAI-compatible `IChatClient`，不依赖 Cosmos、Key Vault、Event Hubs 或 Azure OpenAI 服务。Aspire 单独启动 API、PostgreSQL、Drasi Server 和前端；模型服务由用户控制，可运行在开发机或远端主机。
 
-**Tech Stack:** .NET 9、EF Core 9.0.20、Npgsql.EntityFrameworkCore.PostgreSQL 9.0.4、Testcontainers.PostgreSql 4.15.0、.NET Aspire 13.6.0、Drasi/Dapr 0.10.0/1.14.5、kind、OpenAI-compatible API。
+**Tech Stack:** .NET 9、EF Core 9.0.20、Npgsql.EntityFrameworkCore.PostgreSQL 9.0.4、Testcontainers.PostgreSql 4.15.0、.NET Aspire 13.6.0、Drasi Server 0.2.3、OpenAI-compatible API。
 
 ## Global Constraints
 
@@ -218,25 +220,25 @@ dotnet test tests\Tests.csproj --filter FullyQualifiedName~LocalAiAgentTests
 - 修改：`src/services/SseStreamService.cs`
 - 创建：`tests/integration/SelfHostedRealtimePipelineTests.cs`
 
-- [ ] **步骤 1：写成功及错误语义测试**
+- [x] **步骤 1：写成功及错误语义测试**
 
 使用 TestServer 和 PostgreSQL Testcontainer：连接 `GET /api/v1/notifications/stream/{childId}` 后，向 `POST /api/v1/dapr/drasi/wishlist-updates` 发送 `{ "data": { "childId": "child-1", "text": "Wind-up train" } }`。断言 handler 先持久化 notification，再返回 202，SSE 接收到 `event: notification` 且含预期 child/`Wind-up train`；新建 DbContext 仍能读到记录。再注入持久化失败，断言 handler 返回非 2xx 且没有 SSE/SignalR 广播。
 
-- [ ] **步骤 2：验证测试初始失败**
+- [x] **步骤 2：验证测试初始失败**
 
 运行：`dotnet test tests\Tests.csproj --filter FullyQualifiedName~SelfHostedRealtimePipelineTests`
 
 预期：失败显示当前 Cosmos 仓储无法在 SelfHosted 模式解析，或当前 handler 把持久化错误误报为 Accepted。
 
-- [ ] **步骤 3：修正 reaction handler 错误处理**
+- [x] **步骤 3：修正 reaction handler 错误处理**
 
 缺失/无效 CloudEvent `data` 返回 400；数据库不可用返回 5xx 供 Dapr retry；`OperationCanceledException` 传播；只有 notification 写入成功后才调用 `IStreamBroadcaster.PublishAsync` 并返回 202。为 query id `wishlist-updates` 映射通知类型 `wishlist`，message 由 query result 的 `text` 构造。日志记录 queryId/status，不记录 API key 或原始凭据。
 
-- [ ] **步骤 4：让 SSE 历史读取显式失败**
+- [x] **步骤 4：让 SSE 历史读取显式失败**
 
 从 `SseStreamService.StreamNotificationsAsync` 移除将历史读取异常吞掉后继续 stream-only 的 broad catch。存储查询失败时传播错误，不得伪装为有完整历史的成功连接。SignalR broadcast 验证使用现有 `HubStreamBroadcaster` 的 child group 和 `stream` 方法。
 
-- [ ] **步骤 5：运行通知实时集成测试**
+- [x] **步骤 5：运行通知实时集成测试**
 
 运行：`dotnet test tests\Tests.csproj --filter FullyQualifiedName~SelfHostedRealtimePipelineTests`
 
@@ -264,13 +266,13 @@ dotnet test tests\Tests.csproj --filter FullyQualifiedName~LocalAiAgentTests
 
 添加最小 AppHost project；网络脚本接受 `-ClusterProvider kind`，验证当前 Kubernetes context 与目标集群、API host/port 和 PostgreSQL host/port，任一端点失败时打印脱敏的目标类别和 context 并返回非零。
 
-- [ ] **步骤 2：建立 AppHost 并构建**
+- [x] **步骤 2：建立 AppHost 并构建**
 
 AppHost 创建 PostgreSQL resource + `elves` database，引用 `Projects.src`，设置 SelfHosted runtime 和 AI env mappings，wait for PostgreSQL/API；Vite 仍通过现有 JavaScript integration 运行。用 `.WithDataVolume()` 保留开发数据，固定 host port 前先检测冲突。
 
 运行：`dotnet build AppHost\AppHost.csproj`
 
-预期：AppHost 构建成功，Azure 模式的既有 solution 项目仍可独立构建。
+预期：AppHost 构建成功；本地运行时 PostgreSQL、API `/healthz`、PostgreSQL-backed audit endpoint 和 Vite 均 Ready。SelfHosted API 在开始接收流量前自动应用 EF Core migrations。Azure 模式的既有 solution 项目仍可独立构建。
 
 - [ ] **步骤 3：探测 Windows host 与 kind Pod 双向连通**
 
@@ -278,7 +280,7 @@ AppHost 创建 PostgreSQL resource + `elves` database，引用 `Projects.src`，
 
 运行：`pwsh -File tests\scripts\validate-dev-network.ps1 -ClusterProvider kind`
 
-预期：API 与 PostgreSQL 两端点都可达；失败即停止，不以 `localhost`、hostPort 猜测或跳过错误代替成功。
+预期：API 与 PostgreSQL 两端点都可达；失败即停止，不以 `localhost`、hostPort 猜测或跳过错误代替成功。本机验证确认 API 可本地访问，但 PostgreSQL 端口当前只绑定 loopback；kind 路由仍阻塞，等待私有转发或共享网络方案并经 Pod 实测。
 
 ## Task 7：关闭完整阶段 0 闸门并更新证据
 

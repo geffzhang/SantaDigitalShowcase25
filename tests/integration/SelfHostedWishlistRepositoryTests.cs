@@ -1,6 +1,10 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Persistence;
 using Services;
+using System.Text.Json;
 using Xunit;
 
 namespace IntegrationTests;
@@ -48,6 +52,23 @@ public sealed class SelfHostedWishlistRepositoryTests(PostgresDatabaseFixture fi
         Assert.Equal("behavior-update", outboxEvent.Type);
         Assert.Equal("Shared with a friend", outboxEvent.Text);
         Assert.Equal(entity.DedupeKey, outboxEvent.DedupeKey);
+
+        await verificationDb.Database.OpenConnectionAsync();
+        await using var command = verificationDb.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "SELECT to_jsonb(event)::text FROM wishlist_events AS event WHERE id = @id";
+        var idParameter = command.CreateParameter();
+        idParameter.ParameterName = "id";
+        idParameter.Value = entity.id;
+        command.Parameters.Add(idParameter);
+
+        using var payload = JsonDocument.Parse((string)(await command.ExecuteScalarAsync())!);
+        var fields = payload.RootElement.EnumerateObject().Select(property => property.Name).ToHashSet();
+        Assert.Contains("category", fields);
+        Assert.Contains("budget_estimate", fields);
+        Assert.Contains("status_change", fields);
+        Assert.Equal("toys", payload.RootElement.GetProperty("category").GetString());
+        Assert.Equal(35, payload.RootElement.GetProperty("budget_estimate").GetDouble());
+        Assert.Equal("Nice", payload.RootElement.GetProperty("status_change").GetString());
     }
 
     [Fact]
@@ -159,6 +180,99 @@ public sealed class SelfHostedWishlistRepositoryTests(PostgresDatabaseFixture fi
                 Assert.Equal(childId, notification.ChildId);
             });
         Assert.Equal(recommendation.FallbackUsed, Assert.Single(rationale).FallbackUsed);
+    }
+
+    [Fact]
+    public async Task SelfHostedRuntime_RegistersAndPersistsLogisticsAssessments()
+    {
+        var childId = Guid.NewGuid().ToString();
+        var entity = new LogisticsAssessmentEntity
+        {
+            id = Guid.NewGuid().ToString(),
+            ChildId = childId,
+            RecommendationSetId = "recommendation-set-1",
+            CheckedAt = UtcTimestamp(15),
+            OverallStatus = "partial",
+            FallbackUsed = false,
+            Items =
+            [
+                new LogisticsAssessmentItemEntity
+                {
+                    RecommendationItemId = "item-1",
+                    Feasible = true,
+                    Reason = "Available before the holiday."
+                },
+                new LogisticsAssessmentItemEntity
+                {
+                    RecommendationItemId = "item-2",
+                    Feasible = false,
+                    Reason = "Delivery is after the holiday."
+                }
+            ]
+        };
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Runtime:Mode"] = "SelfHosted",
+                ["AI:Endpoint"] = "http://127.0.0.1:1",
+                ["AI:Model"] = "test-model",
+                ["ConnectionStrings:elves"] = fixture.ConnectionString
+            })
+            .Build();
+        using var host = new HostBuilder()
+            .ConfigureServices(services => services.AddApplicationRuntime(configuration))
+            .Build();
+        await host.StartAsync();
+        var provider = host.Services;
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<ILogisticsAssessmentRepository>();
+            await repository.StoreAsync(entity);
+        }
+
+        await using var verificationScope = provider.CreateAsyncScope();
+        var verificationRepository = verificationScope.ServiceProvider
+            .GetRequiredService<ILogisticsAssessmentRepository>();
+        var assessments = new List<LogisticsAssessmentEntity>();
+        await foreach (var assessment in verificationRepository.ListAsync(childId))
+        {
+            assessments.Add(assessment);
+        }
+
+        var history = await verificationRepository.GetAssessmentHistoryAsync(
+            childId,
+            entity.RecommendationSetId);
+
+        var stored = Assert.Single(assessments);
+        Assert.Equal(entity.id, stored.id);
+        Assert.Equal("partial", stored.OverallStatus);
+        Assert.Collection(
+            stored.Items,
+            item =>
+            {
+                Assert.True(item.Feasible);
+                Assert.Equal("Available before the holiday.", item.Reason);
+            },
+            item =>
+            {
+                Assert.False(item.Feasible);
+                Assert.Equal("Delivery is after the holiday.", item.Reason);
+            });
+        Assert.Collection(
+            history,
+            item =>
+            {
+                Assert.Equal(entity.id, item.AssessmentId);
+                Assert.Equal("item-1", item.RecommendationItemId);
+                Assert.True(item.Feasible);
+            },
+            item =>
+            {
+                Assert.Equal(entity.id, item.AssessmentId);
+                Assert.Equal("item-2", item.RecommendationItemId);
+                Assert.False(item.Feasible);
+            });
     }
 
     private AppDbContext CreateDbContext()

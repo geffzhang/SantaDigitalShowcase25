@@ -25,6 +25,34 @@ public sealed class PostgresPersistenceTests(PostgresDatabaseFixture fixture)
     : IClassFixture<PostgresDatabaseFixture>
 {
     [Fact]
+    public async Task Migrate_CreatesDrasiPublicationForWishlistEvents()
+    {
+        await using var db = CreateDbContext();
+        await db.Database.MigrateAsync();
+        await db.Database.OpenConnectionAsync();
+
+        try
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+            command.CommandText = """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_publication_tables
+                    WHERE pubname = 'drasi_wishlist_events'
+                      AND schemaname = 'public'
+                      AND tablename = 'wishlist_events'
+                );
+                """;
+
+            Assert.Equal(true, await command.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    [Fact]
     public async Task Migrate_EmptyDatabaseAndRoundTripsWishlistOutboxAndNotification()
     {
         var childId = Guid.NewGuid().ToString();

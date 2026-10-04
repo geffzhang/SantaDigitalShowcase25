@@ -35,6 +35,14 @@ public class RuntimeServiceRegistrationTests
     }
 
     [Fact]
+    public void AddApplicationRuntime_AzureUsesDrasiPlatformClient()
+    {
+        using var provider = CreateServices("Azure").BuildServiceProvider();
+
+        Assert.IsType<DrasiViewClient>(provider.GetRequiredService<IDrasiViewClient>());
+    }
+
+    [Fact]
     public void AddApplicationRuntime_SelfHostedExcludesAzureServices()
     {
         var services = CreateServices("SelfHosted");
@@ -51,6 +59,9 @@ public class RuntimeServiceRegistrationTests
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(INotificationRepository) &&
             descriptor.ImplementationType == typeof(PostgresNotificationRepository));
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(ILogisticsAssessmentRepository) &&
+            descriptor.ImplementationType?.Name == "PostgresLogisticsAssessmentRepository");
         Assert.Contains(services, descriptor => descriptor.ServiceType == typeof(IChatClient));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(CosmosClient));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(CosmosSetup));
@@ -67,9 +78,18 @@ public class RuntimeServiceRegistrationTests
             descriptor.ImplementationType == typeof(DrasiHubCacheSeeder));
     }
 
+    [Fact]
+    public void AddApplicationRuntime_SelfHostedUsesDrasiServerClient()
+    {
+        using var provider = CreateServices("SelfHosted").BuildServiceProvider();
+
+        Assert.IsType<DrasiServerViewClient>(provider.GetRequiredService<IDrasiViewClient>());
+    }
+
     private static IServiceCollection CreateServices(string mode)
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -77,6 +97,7 @@ public class RuntimeServiceRegistrationTests
                 ["ConnectionStrings:elves"] = "Host=localhost;Database=elves;Username=postgres;Password=postgres"
             })
             .Build();
+        services.AddSingleton<IConfiguration>(configuration);
 
         return services.AddApplicationRuntime(configuration);
     }

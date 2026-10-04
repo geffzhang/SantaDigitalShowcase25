@@ -29,6 +29,7 @@ temp-*.html
 **/TestResults/
 *.nupkg
 *.snupkg
+**/.aspire/
 
 # Node / Frontend (root + frontend/)
 node_modules/

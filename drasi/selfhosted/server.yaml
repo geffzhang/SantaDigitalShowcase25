@@ -1,0 +1,204 @@
+apiVersion: drasi.io/v1
+id: default
+host: "0.0.0.0"
+port: 8080
+logLevel: info
+persistConfig: false
+autoInstallPlugins: true
+plugins:
+  - ref: source/postgres:0.2.10
+  - ref: bootstrap/postgres:0.2.13
+  - ref: reaction/http:0.3.3
+
+sources:
+  - kind: postgres
+    id: wishlist-postgres
+    autoStart: true
+    host: "${DB_HOST}"
+    port: ${DB_PORT}
+    database: "${DB_NAME}"
+    user: "${DB_USER}"
+    password: "${DB_PASSWORD}"
+    sslMode: disable
+    tables:
+      - wishlist_events
+    slotName: drasi_wishlist_events
+    publicationName: drasi_wishlist_events
+    tableKeys:
+      - table: wishlist_events
+        keyColumns:
+          - id
+    bootstrapProvider:
+      kind: postgres
+      host: "${DB_HOST}"
+      port: ${DB_PORT}
+      database: "${DB_NAME}"
+      user: "${DB_USER}"
+      password: "${DB_PASSWORD}"
+      sslMode: disable
+      tables:
+        - wishlist_events
+      slotName: drasi_wishlist_events
+      publicationName: drasi_wishlist_events
+      tableKeys:
+        - table: wishlist_events
+          keyColumns:
+            - id
+
+queries:
+  - id: wishlist-updates
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      RETURN w.child_id AS childId,
+             'v1' AS schemaVersion,
+             w.text AS text,
+             w.category AS category,
+             w.budget_estimate AS budgetEstimate,
+             w.created_at AS createdAt,
+             w.type AS type,
+             w.dedupe_key AS dedupeKey,
+             w.status_change AS statusChange,
+             w.created_at AS lastChanged
+
+  - id: wishlist-trending-1h
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      WHERE w.created_at >= datetime() - duration({ minutes: 60 })
+        AND w.type = 'gift'
+        AND w.text IS NOT NULL
+      RETURN w.text AS item,
+             count(w) AS frequency
+
+  - id: wishlist-duplicates-global
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      RETURN w.text AS item,
+             count(w) AS itemCount
+
+  - id: wishlist-inactive-children-3d
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      WITH w.child_id AS childId, max(w.created_at) AS lastEvent
+      WHERE lastEvent <= datetime() - duration({ days: 3 })
+      RETURN childId, lastEvent
+
+  - id: recommendation-trending-30m
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      WHERE w.created_at >= datetime() - duration({ minutes: 30 })
+        AND w.type = 'recommendation-update'
+      RETURN w.text AS suggestion,
+             count(w) AS freq
+
+  - id: wishlist-duplicates-by-child
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      WHERE w.type = 'gift'
+        AND w.text IS NOT NULL
+      WITH w.child_id AS childId, w.text AS item, count(w) AS duplicateCount
+      WHERE duplicateCount > 1
+      RETURN childId, item, duplicateCount
+
+  - id: behavior-status-changes
+    autoStart: true
+    queryLanguage: Cypher
+    sources:
+      - sourceId: wishlist-postgres
+    query: |
+      MATCH (w:wishlist_events)
+      WHERE w.type = 'behavior-update'
+        AND w.status_change IS NOT NULL
+      RETURN w.child_id AS childId,
+             coalesce(w.status_change, 'Unknown') AS newStatus,
+             'Unknown' AS previousStatus,
+             w.created_at AS changedAt
+
+reactions:
+  - kind: http
+    id: wishlist-notifications
+    queries:
+    - wishlist-updates
+    - wishlist-trending-1h
+    - wishlist-duplicates-by-child
+    - wishlist-inactive-children-3d
+    autoStart: true
+    baseUrl: "${API_BASE_URL}"
+    timeoutMs: 10000
+    outputTemplates:
+      routes:
+        wishlist-updates:
+          added:
+            url: "/api/v1/drasi/reactions/wishlist-updates"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","text":"{{after.text}}"}}'
+            headers:
+              Content-Type: application/json
+          updated:
+            url: "/api/v1/drasi/reactions/wishlist-updates"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","text":"{{after.text}}"}}'
+            headers:
+              Content-Type: application/json
+        wishlist-trending-1h:
+          added:
+            url: "/api/v1/drasi/reactions/wishlist-trending-1h"
+            method: POST
+            template: '{"data":{"item":"{{after.item}}","frequency":{{after.frequency}}}}'
+            headers:
+              Content-Type: application/json
+          updated:
+            url: "/api/v1/drasi/reactions/wishlist-trending-1h"
+            method: POST
+            template: '{"data":{"item":"{{after.item}}","frequency":{{after.frequency}}}}'
+            headers:
+              Content-Type: application/json
+        wishlist-duplicates-by-child:
+          added:
+            url: "/api/v1/drasi/reactions/wishlist-duplicates-by-child"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","item":"{{after.item}}","duplicateCount":{{after.duplicateCount}}}}'
+            headers:
+              Content-Type: application/json
+          updated:
+            url: "/api/v1/drasi/reactions/wishlist-duplicates-by-child"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","item":"{{after.item}}","duplicateCount":{{after.duplicateCount}}}}'
+            headers:
+              Content-Type: application/json
+        wishlist-inactive-children-3d:
+          added:
+            url: "/api/v1/drasi/reactions/wishlist-inactive-children-3d"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","lastEvent":"{{after.lastEvent}}"}}'
+            headers:
+              Content-Type: application/json
+          updated:
+            url: "/api/v1/drasi/reactions/wishlist-inactive-children-3d"
+            method: POST
+            template: '{"data":{"childId":"{{after.childId}}","lastEvent":"{{after.lastEvent}}"}}'
+            headers:
+              Content-Type: application/json

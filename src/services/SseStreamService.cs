@@ -78,18 +78,11 @@ public sealed class SseStreamService : ISseStreamService
     public async Task StreamNotificationsAsync(string childId, HttpContext ctx, CancellationToken ct)
     {
         await PrepareAsync(childId, ctx, streamType: "notifications", ct);
-        try
+        await foreach (var n in _notifications.ListAsync(childId).WithCancellation(ct))
         {
-            await foreach (var n in _notifications.ListAsync(childId).WithCancellation(ct))
-            {
-                // Emit camelCase payload to match UI model
-                await EmitAsync(ctx, childId, "notification", new { id = n.id, type = n.Type, message = n.Message, relatedId = n.RelatedId, state = n.State }, ct);
-            }
+            await EmitAsync(ctx, childId, "notification", new { id = n.id, type = n.Type, message = n.Message, relatedId = n.RelatedId, state = n.State }, ct);
         }
-        catch
-        {
-            // If historical listing fails (e.g., container missing), continue with live stream only
-        }
+
         // Live updates
         var reader = _broadcaster.Subscribe(childId);
         while (!ct.IsCancellationRequested && await reader.WaitToReadAsync(ct))

@@ -139,8 +139,15 @@ public static class DrasiInsightsApi
         .WithTags("Drasi");
 
         // Stream real-time Santa's Workshop insights (SSE) from Cosmos DB change feed
-        app.MapGet("drasi/insights/stream", async (HttpContext ctx, ICosmosRepository cosmos, IConfiguration config, ILogger<Program> logger, CancellationToken ct) =>
+        app.MapGet("drasi/insights/stream", async (HttpContext ctx, IConfiguration config, ILogger<Program> logger, CancellationToken ct) =>
         {
+            var cosmos = ctx.RequestServices.GetService<ICosmosRepository>();
+            if (cosmos is null)
+            {
+                ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
             // Proxy-friendly SSE headers (avoid buffering and caching)
             ctx.Response.ContentType = "text/event-stream; charset=utf-8";
             ctx.Response.Headers.CacheControl = "no-cache, no-transform";
