@@ -1,4 +1,3 @@
-using Azure;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Models;
@@ -26,68 +25,30 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
     private readonly IRecommendationService _recommendationService;
     private readonly AgentToolLibrary _toolLibrary;
     private readonly ILogger<MultiAgentOrchestrator> _logger;
-    private readonly IConfiguration _configuration;
+    private readonly IChatClient _chatClient;
 
     // Specialized agents for different aspects
     private AIAgent? _analystAgent;
     private AIAgent? _creativeAgent;
     private AIAgent? _reviewerAgent;
 
-    // IChatClient created lazily when needed
-    private IChatClient? _chatClient;
-
     public MultiAgentOrchestrator(
         IChildProfileService profileService,
         IRecommendationService recommendationService,
         AgentToolLibrary toolLibrary,
-        IConfiguration configuration,
+        IChatClient chatClient,
         ILogger<MultiAgentOrchestrator> logger)
     {
         _profileService = profileService;
         _recommendationService = recommendationService;
         _toolLibrary = toolLibrary;
-        _configuration = configuration;
+        _chatClient = chatClient;
         _logger = logger;
-    }
-
-    private IChatClient GetChatClient()
-    {
-        if (_chatClient == null)
-        {
-            string endpoint = _configuration["AZURE_OPENAI_ENDPOINT"]
-                ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
-                ?? throw new InvalidOperationException("AZURE_OPENAI_ENDPOINT is not configured.");
-            string deploymentName = _configuration["AZURE_OPENAI_DEPLOYMENT_NAME"]
-                ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME")
-                ?? throw new InvalidOperationException("AZURE_OPENAI_DEPLOYMENT_NAME is not configured.");
-
-            // Prefer API Key if provided (for emergency workaround), otherwise use Managed Identity
-            string? apiKey = _configuration["AZURE_OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-
-            // Configure client options with extended network timeout for AI operations
-            // Each agent call may take 20-40s with tool calling, so we need 60s per call
-            var clientOptions = new Azure.AI.OpenAI.AzureOpenAIClientOptions
-            {
-                NetworkTimeout = TimeSpan.FromSeconds(60)
-            };
-
-            Azure.AI.OpenAI.AzureOpenAIClient azureClient;
-            if (!string.IsNullOrEmpty(apiKey))
-            {
-                azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new Azure.AzureKeyCredential(apiKey), clientOptions);
-            }
-            else
-            {
-                azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new Azure.Identity.DefaultAzureCredential(), clientOptions);
-            }
-            _chatClient = azureClient.GetChatClient(deploymentName).AsIChatClient();
-        }
-        return _chatClient;
     }
 
     private void InitializeAgents()
     {
-        var chatClient = GetChatClient();
+        var chatClient = _chatClient;
 
         // Create AI tools from the tool library methods
         // Use AIFunctionFactory.Create with method delegates
@@ -112,7 +73,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
         };
 
         // Analyst Agent - extracts insights from child data with tool access
-        _analystAgent = chatClient.CreateAIAgent(
+        _analystAgent = chatClient.AsAIAgent(
             name: "BehaviorAnalyst",
             instructions: """
             You are the Behavior Analyst Elf. Be CONCISE - output max 200 words.
@@ -132,7 +93,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
         );
 
         // Creative Agent - generates creative gift ideas with inventory access
-        _creativeAgent = chatClient.CreateAIAgent(
+        _creativeAgent = chatClient.AsAIAgent(
             name: "CreativeGiftElf",
             instructions: """
             You are the Creative Gift Elf. Be CONCISE - output max 200 words.
@@ -152,7 +113,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
         );
 
         // Reviewer Agent - validates and refines recommendations
-        _reviewerAgent = chatClient.CreateAIAgent(
+        _reviewerAgent = chatClient.AsAIAgent(
             name: "QualityReviewerElf",
             instructions: """
             You are the Quality Reviewer Elf. Be CONCISE - output max 300 words.
@@ -205,7 +166,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
             """;
 
             var analystStartTime = startTime.ElapsedMilliseconds;
-            AgentRunResponse? analysisResult = await _analystAgent!.RunAsync($"Analyze this child profile:\n{context}", cancellationToken: ct);
+            AgentResponse? analysisResult = await _analystAgent!.RunAsync($"Analyze this child profile:\n{context}", cancellationToken: ct);
             string analysis = analysisResult?.ToString() ?? "Unable to analyze profile";
 
             var analystTime = startTime.ElapsedMilliseconds - analystStartTime;
@@ -220,7 +181,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
             """;
 
             var creativeStartTime = startTime.ElapsedMilliseconds;
-            AgentRunResponse? creativeResult = await _creativeAgent!.RunAsync(creativePrompt, cancellationToken: ct);
+            AgentResponse? creativeResult = await _creativeAgent!.RunAsync(creativePrompt, cancellationToken: ct);
             string suggestions = creativeResult?.ToString() ?? "Unable to generate suggestions";
 
             var creativeTime = startTime.ElapsedMilliseconds - creativeStartTime;
@@ -242,7 +203,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
             """;
 
             var reviewerStartTime = startTime.ElapsedMilliseconds;
-            AgentRunResponse? finalResult = await _reviewerAgent!.RunAsync(reviewPrompt, cancellationToken: ct);
+            AgentResponse? finalResult = await _reviewerAgent!.RunAsync(reviewPrompt, cancellationToken: ct);
             string finalRecommendations = finalResult?.ToString() ?? suggestions;
 
             var reviewerTime = startTime.ElapsedMilliseconds - reviewerStartTime;
@@ -345,7 +306,7 @@ public class MultiAgentOrchestrator : IMultiAgentOrchestrator
             """;
 
             var reviewerStart = startTime.ElapsedMilliseconds;
-            AgentRunResponse? finalResult = await _reviewerAgent!.RunAsync(reviewPrompt, cancellationToken: ct);
+            AgentResponse? finalResult = await _reviewerAgent!.RunAsync(reviewPrompt, cancellationToken: ct);
             string finalRecommendations = finalResult?.ToString() ?? suggestions;
 
             var reviewerTime = startTime.ElapsedMilliseconds - reviewerStart;

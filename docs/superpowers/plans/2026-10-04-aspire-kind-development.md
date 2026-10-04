@@ -2,25 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让开发者通过一条 PowerShell 命令创建或复用本地 kind/k3d 集群、启动 Drasi，并用 .NET Aspire 13.6 编排 API、PostgreSQL、本地模型和前端开发服务器。
+**Goal:** 让开发者通过一条 PowerShell 命令创建或复用本地 kind/k3d 集群、启动 Drasi，并用 .NET Aspire 13.6 编排 API、PostgreSQL 和前端开发服务器；模型由用户控制的自托管端点提供。
 
-**Architecture:** Aspire AppHost 管理应用侧进程/容器；独立 bootstrap 脚本负责 Kubernetes context 和 Drasi/Dapr 安装。脚本先确保集群和 Drasi operator 就绪，再启动 AppHost 并等待 PostgreSQL/API/模型就绪，随后应用 provider/query/reaction manifests 并等待其 readiness。kind/k3d 与 Aspire 容器网络间使用显式可路由地址，禁止向 Pod 传入不可达的 `localhost`。
+**Architecture:** Aspire AppHost 管理应用侧进程/容器；独立 bootstrap 脚本负责 Kubernetes context 和 Drasi/Dapr 安装。脚本先确保集群和 Drasi operator 就绪，再启动 SelfHosted 模式的 AppHost 并等待 PostgreSQL/API 就绪，随后应用 provider/query/reaction manifests 并等待其 readiness。模型 endpoint 来自 `LLM_BASE_URL`，其网络连通性由 API 集成测试验证。kind/k3d 与 Aspire 容器网络间使用显式可路由地址，禁止向 Pod 传入不可达的 `localhost`。
 
 **Tech Stack:** .NET 9、Aspire.Hosting.AppHost 13.6.0、Aspire.Hosting.PostgreSQL 13.6.0、Aspire.Hosting.JavaScript 13.6.0、PowerShell 7、Docker、kind/k3d、Drasi/Dapr。
 
 ## Global Constraints
 
 - Aspire 版本固定为 13.6.0；API 保持 `net9.0`。
-- Aspire 只负责编排开发机上的 API、PostgreSQL、本地模型及前端；不负责创建 Kubernetes 集群或 Linux 生产部署。
+- Aspire 只负责编排开发机上的 API、PostgreSQL 及前端；不负责创建 Kubernetes 集群或 Linux 生产部署。本计划使用用户控制的远端自托管模型 endpoint，不在 Aspire 中创建模型容器。
 - 启动脚本创建集群前验证当前 context；已存在集群时复用，不自动删除集群、PVC 或数据库数据。
-- 使用数据/AI 计划确定的 `ConnectionStrings:elves`、`AI:Endpoint`、`AI:Model` 和 Drasi endpoint 配置契约。
+- 使用数据/AI 计划确定的 `ConnectionStrings:elves`、`Runtime:Mode=SelfHosted`、`AI:Endpoint`、`AI:Model` 和 Drasi endpoint 配置契约；`LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 从未提交的环境配置映射。
 - 若 kind/k3d Pod 无法访问 Aspire 管理的数据库/模型或反向访问 Drasi，必须先修网络，不能以 Docker Desktop 专属猜测地址绕过测试。
 
 ---
 
 ## 文件结构与边界
 
-- 创建 `AppHost/AppHost.csproj`、`AppHost/Program.cs`、`AppHost/Properties/launchSettings.json`：声明本地服务图。
+- 创建 `AppHost/AppHost.csproj`、`AppHost/Program.cs`、`AppHost/Properties/launchSettings.json`：声明 API、PostgreSQL 和前端服务图，并把外部自托管模型配置传给 API。
 - 创建 `drasi/local/kind.yaml`、`drasi/local/k3d.yaml`：只定义本地集群端口映射和节点资源，不含凭据。
 - 创建 `scripts/dev-up.ps1`、`scripts/dev-down.ps1`：校验工具、创建/复用集群、安装 Drasi/Dapr、启动/停止 AppHost。
 - 修改 `SantaDigitalShowcae25.sln`：加入 AppHost 项目。
@@ -38,7 +38,7 @@
 **Interfaces:**
 - AppHost TFM 设为 `net9.0`，引用 `src/src.csproj`；solution 内项目标识为 `src`，故生成引用类型为 `Projects.src`。
 - AppHost 使用 package `Aspire.Hosting.AppHost`、`Aspire.Hosting.PostgreSQL`、`Aspire.Hosting.JavaScript`，版本均为 `13.6.0`。
-- AppHost 生成给 API 的 `ConnectionStrings:elves`，并注入 `AI:Endpoint`、`AI:Model`、Drasi base URL。
+- AppHost 生成给 API 的 `ConnectionStrings:elves`，设置 `Runtime:Mode=SelfHosted`，并从 `LLM_*` 注入 `AI:Endpoint`、`AI:Model`、`AI:ApiKey` 及 Drasi base URL。
 
 - [ ] **步骤 1：写 AppHost wiring smoke test/验证入口**
 
@@ -46,41 +46,39 @@
 
 - [ ] **步骤 2：建立最小 AppHost**
 
-AppHost 定义 PostgreSQL database 资源、API project、Vite frontend 和可配置的本地模型容器。关键资源声明使用以下 Aspire 13.6 API 形式：
+AppHost 定义 PostgreSQL database 资源、API project 和 Vite frontend。模型不作为 Aspire 容器资源；AppHost 从环境读取用户控制的 self-hosted endpoint/model/key，将 endpoint、model 传给 API，将 key 作为 secret configuration 注入。关键资源声明使用以下 Aspire 13.6 API 形式：
 
 ```csharp
 var builder = DistributedApplication.CreateBuilder(args);
 var postgres = builder.AddPostgres("postgres")
     .WithDataVolume();
 var database = postgres.AddDatabase("elves");
-var modelImage = builder.Configuration["AI:ContainerImage"]
-    ?? throw new InvalidOperationException("AI:ContainerImage is required.");
-var modelTag = builder.Configuration["AI:ContainerTag"]
-    ?? throw new InvalidOperationException("AI:ContainerTag is required.");
-var modelPort = int.Parse(builder.Configuration["AI:ContainerPort"]
-    ?? throw new InvalidOperationException("AI:ContainerPort is required."));
-var model = builder.AddContainer("model", modelImage, modelTag)
-    .WithHttpEndpoint(name: "http", targetPort: modelPort);
+var modelEndpoint = builder.Configuration["LLM_BASE_URL"]
+    ?? throw new InvalidOperationException("LLM_BASE_URL is required.");
+var modelName = builder.Configuration["LLM_MODEL_NAME"]
+    ?? throw new InvalidOperationException("LLM_MODEL_NAME is required.");
+if (string.IsNullOrWhiteSpace(builder.Configuration["LLM_API_KEY"]))
+    throw new InvalidOperationException("LLM_API_KEY is required.");
+var modelKey = builder.AddParameterFromConfiguration(
+    "llm-api-key", "LLM_API_KEY", secret: true);
 var api = builder.AddProject<Projects.src>("api")
     .WithHttpEndpoint(port: 8080)
     .WithReference(database)
-    .WithReference(model)
-    .WithEnvironment("AI__Endpoint",
-        ReferenceExpression.Create($"{model.GetEndpoint("http")}/v1"))
-    .WithEnvironment("AI__Model", builder.Configuration["AI:Model"]
-        ?? throw new InvalidOperationException("AI:Model is required."))
-    .WaitFor(database)
-    .WaitFor(model);
+    .WithEnvironment("Runtime__Mode", "SelfHosted")
+    .WithEnvironment("AI__Endpoint", modelEndpoint)
+    .WithEnvironment("AI__Model", modelName)
+    .WithEnvironment("AI__ApiKey", modelKey)
+    .WaitFor(database);
 builder.AddViteApp("frontend", "../frontend", "dev")
     .WithReference(api);
 builder.Build().Run();
 ```
 
-将模型 image/tag/port/model 作为 AppHost 配置传给 API；`AI:Endpoint` 由 Aspire 的模型 HTTP endpoint reference 加上 `/v1` 路径生成，不允许配置不可达的 `localhost` 地址；模型密钥通过未提交的本地 secret/config 注入。为 PostgreSQL 配置可复用数据卷，例如对 PostgreSQL resource 调用 `.WithDataVolume()`。API 使用 `WaitFor` 等待数据库和模型服务就绪。所选模型运行时在 AI 计划里通过真实 tool-call 测试后再固定。
+将 `LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 传给 API 的 `AI:*` configuration，key 使用 Aspire secret parameter 或受保护的环境注入，禁止在日志和 dashboard 展示。Endpoint 必须是用户控制的自托管模型地址，不得默认为 `localhost`。为 PostgreSQL 配置可复用数据卷；API 使用 `WaitFor(database)`。模型不可用时 Agent request 必须明确失败且不得回退到 Azure；不存在 `WaitFor(model)`，因为模型不是 AppHost resource。
 
 - [ ] **步骤 3：构建并确认 dashboard 资源**
 
-运行 `dotnet build AppHost\AppHost.csproj`，预期成功并输出 AppHost 项目。运行 `dotnet run --project AppHost\AppHost.csproj`，预期 Aspire dashboard 显示 API、PostgreSQL、frontend 和模型资源的真实状态；关闭此手工进程后继续。
+运行 `dotnet build AppHost\AppHost.csproj`，预期成功并输出 AppHost 项目。运行 `dotnet run --project AppHost\AppHost.csproj`，预期 Aspire dashboard 显示 API、PostgreSQL、frontend 的真实状态；API 对用户控制的模型 endpoint 执行脱敏 readiness 检查。关闭此手工进程后继续。
 
 ## Task 2：创建可路由的本地 Kubernetes 网络配置
 
@@ -117,7 +115,7 @@ kind control-plane 映射 Drasi HTTP/SSE/SignalR 所需端口；k3d 通过 serve
 
 - [ ] **步骤 1：先写脚本行为验证**
 
-为 `scripts/dev-up.ps1` 加 Pester 测试，覆盖：缺少 Docker/kubectl/provider binary 报具体缺失项；不受管理的当前 context 不执行 `kubectl apply`；目标集群已存在时不调用 create/delete；任何 native 命令非零退出时 wrapper 失败。README 明确列出 PowerShell 7、Docker、kubectl、kind/k3d、Drasi CLI、.NET 9 SDK 和 Node.js 运行时为前置条件。
+为 `scripts/dev-up.ps1` 加 Pester 测试，覆盖：缺少 Docker/kubectl/provider binary 报具体缺失项；不受管理的当前 context 不执行 `kubectl apply`；目标集群已存在时不调用 create/delete；任何 native 命令非零退出时 wrapper 失败。README 明确列出 PowerShell 7、Docker、kubectl、kind/k3d、Drasi CLI、.NET 9 SDK、Node.js 和可从开发 API 网络访问的自托管模型 endpoint 为前置条件。
 
 - [ ] **步骤 2：运行 Pester 确认失败**
 
@@ -125,7 +123,7 @@ kind control-plane 映射 Drasi HTTP/SSE/SignalR 所需端口；k3d 通过 serve
 
 - [ ] **步骤 3：实现安全的启动顺序**
 
-顺序为：检查 PowerShell/Docker/kubectl/所选 kind/k3d/Drasi CLI/Aspire SDK；仅在目标 context 不存在时创建集群；切换并再次验证 context 名；安装/等待 Dapr 和 Drasi operator；启动 AppHost 并保存本次进程 PID；等待 PostgreSQL、API 和模型服务就绪；应用本地 providers/resources；检查 source、queries、reaction readiness。任何阶段失败立即退出，不运行后续阶段；不得在 PostgreSQL 尚未启动时等待其 Drasi source readiness。
+顺序为：检查 PowerShell/Docker/kubectl/所选 kind/k3d/Drasi CLI/Aspire SDK 及 `LLM_*` 配置；仅在目标 context 不存在时创建集群；切换并再次验证 context 名；安装/等待 Dapr 和 Drasi operator；启动 AppHost 并保存本次进程 PID；等待 PostgreSQL/API 就绪；从 API 检查模型服务连通；应用本地 providers/resources；检查 source、queries、reaction readiness。任何阶段失败立即退出，不运行后续阶段；不得在 PostgreSQL 尚未启动时等待其 Drasi source readiness。
 
 - [ ] **步骤 4：实现停止命令和说明**
 

@@ -16,7 +16,7 @@ public static class AgUiEndpoints
 
     public static IEndpointRouteBuilder MapAgUi(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/agents/{agentId}/run", async (string agentId, HttpContext ctx, IDrasiViewClient drasiClient, IConfiguration config, IChildProfileService profileService, CancellationToken ct) =>
+        app.MapPost("/agents/{agentId}/run", async (string agentId, HttpContext ctx, IDrasiViewClient drasiClient, IChatClient chatClient, IConfiguration config, IChildProfileService profileService, CancellationToken ct) =>
         {
             SseWriter.Prepare(ctx.Response);
             var runId = Guid.NewGuid().ToString("n");
@@ -44,7 +44,7 @@ public static class AgUiEndpoints
             var childId = agentId.StartsWith("elf-agent-") ? agentId["elf-agent-".Length..] : "unknown";
 
             // Create agent based on agentId
-            var agent = await CreateAgentForIdAsync(agentId, ctx.RequestServices);
+            var agent = CreateAgentForId(agentId, chatClient);
             if (agent == null)
             {
                 ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -102,7 +102,7 @@ public static class AgUiEndpoints
                 logger.LogDebug("[AgUI] Prompt preview: {Prompt}", prompt.Length > 200 ? prompt.Substring(0, 200) + "..." : prompt);
 
                 // Invoke AIAgent with streaming via RunAsync
-                AgentRunResponse? run = null;
+                AgentResponse? run = null;
                 try
                 {
                     logger.LogInformation("[AgUI] Calling agent.RunAsync...");
@@ -127,7 +127,7 @@ public static class AgUiEndpoints
                 }
 
                 // Extract text response from agent
-                // Microsoft.Agents.AI.AgentRunResponse has a ToString() method that returns the response content
+                // AgentResponse.ToString() returns the response content.
                 var responseText = run?.ToString() ?? "";
                 logger.LogInformation("[AgUI] Agent {AgentId} response length: {ResponseLength} chars", agentId, responseText.Length);
 
@@ -209,38 +209,24 @@ public static class AgUiEndpoints
     /// <summary>
     /// Create appropriate AIAgent based on agentId
     /// </summary>
-    private static Task<AIAgent?> CreateAgentForIdAsync(string agentId, IServiceProvider services)
+    private static AIAgent? CreateAgentForId(string agentId, IChatClient chatClient)
     {
         // Normalize agentId - strip "elf-agent-" prefix if present
         var normalizedId = agentId.StartsWith("elf-agent-") ? "elf" : agentId;
 
-        // Get Azure OpenAI configuration
-        var config = services.GetRequiredService<IConfiguration>();
-        var endpoint = ConfigurationHelper.GetRequiredValue(
-            config,
-            "AzureOpenAI:Endpoint",
-            "AZURE_OPENAI_ENDPOINT");
-        var deploymentName = ConfigurationHelper.GetRequiredValue(
-            config,
-            "AzureOpenAI:DeploymentName",
-            "AZURE_OPENAI_DEPLOYMENT_NAME");
-
-        var azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new Azure.Identity.DefaultAzureCredential());
-        var chatClient = azureClient.GetChatClient(deploymentName).AsIChatClient();
-
         // Create agent with appropriate system prompt
-        return Task.FromResult<AIAgent?>(normalizedId switch
+        return normalizedId switch
         {
-            "elf" => chatClient.CreateAIAgent(
+            "elf" => chatClient.AsAIAgent(
                 name: "ElfRecommendationAgent",
                 instructions: ElfAgentPrompts.ElfRecommendationAgentSystemPrompt),
 
-            "santa" => chatClient.CreateAIAgent(
+            "santa" => chatClient.AsAIAgent(
                 name: "SantaAnalysisAgent",
                 instructions: SantaAgentSystemPrompt),
 
             _ => null
-        });
+        };
     }
 
     /// <summary>

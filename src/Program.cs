@@ -1,13 +1,9 @@
-using Azure;
-using Azure.Identity;
 using Drasicrhsit.Infrastructure;
 using Drasicrhsit.Services;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
 using Models;
 using Services;
 using Middleware;
-using Microsoft.Azure.Cosmos; // for CosmosClient
+using Microsoft.Azure.Cosmos;
 using Polly;
 using Polly.Timeout;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -86,10 +82,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(System.Text.Json.JsonNamingPolicy.CamelCase));
 });
 
-builder.Services.AddSingleton<ISecretProvider, KeyVaultSecretProvider>();
-builder.Services.AddSingleton<CosmosSetup>();
 builder.Services.AddOptions<ElfRecommendationAgentOptions>()
     .Bind(builder.Configuration.GetSection("ElfAgents:Recommendation"));
+builder.Services.AddApplicationRuntime(builder.Configuration);
 
 // Drasi integration - HttpClient for view service queries with Polly resilience
 builder.Services.AddHttpClient<IDrasiViewClient, DrasiViewClient>(client => client.Timeout = TimeSpan.FromSeconds(30))
@@ -120,85 +115,6 @@ builder.Services.AddHealthChecks()
 builder.Services.AddHttpClient("drasi-signalr-proxy")
     .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(30));
 
-// Cosmos client & repository registrations (new domain repositories)
-builder.Services.AddSingleton(sp =>
-{
-    var cfg = sp.GetRequiredService<IConfiguration>();
-    // Prefer environment variable COSMOS_ENDPOINT (non-secret) then config section
-    var endpoint = Drasicrhsit.Infrastructure.ConfigurationHelper.GetOptionalValue(
-        cfg,
-        "Cosmos:Endpoint",
-        "COSMOS_ENDPOINT");
-    if (string.IsNullOrWhiteSpace(endpoint))
-    {
-        endpoint = cfg["Cosmos:Endpoint"]; // expected when using MSI or key
-    }
-    var key = cfg["Cosmos:Key"]; // may be blank/placeholder when using MSI
-
-    bool KeyLooksValid(string? k)
-    {
-        if (string.IsNullOrWhiteSpace(k))
-            return false;
-        try
-        {
-            _ = Convert.FromBase64String(k);
-            return true;
-        }
-        catch { return false; }
-    }
-
-    CosmosClient client;
-    if (!string.IsNullOrWhiteSpace(endpoint))
-    {
-        // Configure Cosmos serialization options to use camelCase (matches partition key /childId)
-        var cosmosOptions = new CosmosClientOptions
-        {
-            SerializerOptions = new CosmosSerializationOptions
-            {
-                PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase // ChildId → childId
-            }
-        };
-
-        if (KeyLooksValid(key))
-        {
-            client = new CosmosClient(endpoint, key, cosmosOptions);
-        }
-        else
-        {
-            // Use system managed identity (DefaultAzureCredential)
-            client = new CosmosClient(endpoint, new DefaultAzureCredential(), cosmosOptions);
-        }
-    }
-    else
-    {
-        // Fallback to Key Vault secrets via CosmosSetup (endpoint + key)
-        var setup = sp.GetRequiredService<CosmosSetup>();
-        var created = setup.TryCreateClientAsync().GetAwaiter().GetResult();
-        if (created is null)
-        {
-            throw new InvalidOperationException("Cosmos configuration missing: no endpoint in config and secrets could not produce a client.");
-        }
-        client = created;
-    }
-
-    // Provisioning of database and containers is now handled via infrastructure (Bicep).
-    // Remove in-code CreateDatabaseIfNotExists / CreateContainerIfNotExists to avoid RBAC startup failures.
-    return client;
-});
-builder.Services.AddSingleton<ICosmosRepository>(sp =>
-{
-    var cfg = sp.GetRequiredService<IConfiguration>();
-    var client = sp.GetRequiredService<CosmosClient>();
-    var dbName = cfg["Cosmos:DatabaseName"] ?? "elves_demo";
-    return new CosmosRepository(client, dbName);
-});
-builder.Services.AddScoped<IWishlistRepository, WishlistRepository>();
-builder.Services.AddScoped<IRecommendationRepository, RecommendationRepository>();
-builder.Services.AddScoped<IProfileSnapshotRepository, ProfileSnapshotRepository>();
-builder.Services.AddScoped<ILogisticsAssessmentRepository, LogisticsAssessmentRepository>();
-builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
-builder.Services.AddSingleton<IStreamResumeStore, InMemoryStreamResumeStore>();
-builder.Services.AddSingleton<IStreamMetrics, InMemoryStreamMetrics>();
 builder.Services.AddScoped<IStreamEventService, StreamEventService>();
 builder.Services.AddSingleton<IFallbackUtils, FallbackUtils>();
 builder.Services.AddSingleton<IMetricsService, InMemoryMetricsService>();
@@ -222,36 +138,6 @@ builder.Services.AddScoped<ILogisticsAssessmentValidator, LogisticsAssessmentVal
 // Idempotency store for POST operations
 builder.Services.AddSingleton<InMemoryIdempotencyStore>();
 
-// Elf Recommendation Agent: Azure OpenAI + Microsoft Agent Framework, following sample pattern
-builder.Services.AddSingleton<AIAgent>(sp =>
-{
-    var cfg = sp.GetRequiredService<IConfiguration>();
-    var endpoint = Drasicrhsit.Infrastructure.ConfigurationHelper.GetRequiredValue(
-        cfg,
-        "AzureOpenAI:Endpoint",
-        "AZURE_OPENAI_ENDPOINT");
-    var deploymentName = Drasicrhsit.Infrastructure.ConfigurationHelper.GetRequiredValue(
-        cfg,
-        "AzureOpenAI:DeploymentName",
-        "AZURE_OPENAI_DEPLOYMENT_NAME");
-
-    // Prefer API Key if provided (for emergency workaround), otherwise use Managed Identity
-    var apiKey = cfg["AzureOpenAI:ApiKey"] ?? cfg["AZURE_OPENAI_API_KEY"];
-    Azure.AI.OpenAI.AzureOpenAIClient azureClient;
-    if (!string.IsNullOrEmpty(apiKey))
-    {
-        azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new Azure.AzureKeyCredential(apiKey));
-    }
-    else
-    {
-        azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential());
-    }
-    var chatClient = azureClient.GetChatClient(deploymentName).AsIChatClient();
-    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ElfRecommendationAgentOptions>>().Value;
-    var systemPrompt = options.SystemPromptOverride ?? ElfAgentPrompts.ElfRecommendationAgentSystemPrompt;
-    return chatClient.CreateAIAgent(name: "ElfRecommendationAgent", instructions: systemPrompt);
-});
-
 builder.Services.AddScoped<IElfAgentOrchestrator, ElfAgentOrchestrator>();
 builder.Services.AddSingleton<IEventRepository, EventRepository>();
 builder.Services.AddSingleton<IJobRepository, JobRepository>();
@@ -267,7 +153,6 @@ builder.Services.AddScoped<IElfRecommendationService, ElfRecommendationService>(
 builder.Services.AddScoped<ILogisticsAssessmentService, LogisticsAssessmentService>();
 builder.Services.AddSingleton<INotificationService, NotificationService>();
 builder.Services.AddSingleton<INotificationMutator>(sp => (NotificationService)sp.GetRequiredService<INotificationService>());
-builder.Services.AddSingleton<IEventPublisher, EventHubPublisher>();
 builder.Services.AddSingleton<IDrasiRealtimeService, DrasiRealtimeService>();
 
 // Enhanced Agent Framework services
@@ -280,14 +165,6 @@ builder.Services.AddScoped<INaughtyNiceEventHandler, NaughtyNiceEventHandler>();
 
 // Azure API Guidelines: ETag service for conditional requests (optimistic concurrency)
 builder.Services.AddSingleton<IETagService, ETagService>();
-
-// Re-enable change feed publisher for wishlist events as single authoritative emission source.
-builder.Services.AddHostedService<CosmosWishlistChangeFeedPublisher>();
-builder.Services.AddHostedService<CosmosRecommendationChangeFeedPublisher>();
-
-// Background service to seed SignalR hub cache with Cosmos DB data
-// This ensures frontend can display trending/duplicates/inactive data even without Drasi reactions
-builder.Services.AddHostedService<DrasiHubCacheSeeder>();
 
 // CORS configuration - read allowed origins from configuration (supports env override via CORS__AllowedOrigins__0, etc.)
 // NOTE: Frontend is now served from the same Container App (same-origin in production), so CORS is mainly for
@@ -315,8 +192,11 @@ if (loadedEnvFilePath is not null)
 {
     app.Logger.LogInformation("Loaded .env file from {EnvFilePath}", loadedEnvFilePath);
 }
-app.Logger.LogInformation("Registered {ServiceName} hosted service", nameof(CosmosWishlistChangeFeedPublisher));
-app.Logger.LogInformation("Registered {ServiceName} hosted service", nameof(CosmosRecommendationChangeFeedPublisher));
+if (app.Services.GetRequiredService<RuntimeModeOptions>().Mode == RuntimeMode.Azure)
+{
+    app.Logger.LogInformation("Registered {ServiceName} hosted service", nameof(CosmosWishlistChangeFeedPublisher));
+    app.Logger.LogInformation("Registered {ServiceName} hosted service", nameof(CosmosRecommendationChangeFeedPublisher));
+}
 
 // CORS must be early in pipeline to handle preflight OPTIONS requests
 // Add Access-Control-Allow-Credentials to ALL responses (SignalR negotiate needs this)
@@ -728,7 +608,6 @@ v1.MapPost("children/{childId}/wishlist-items", async (string childId, HttpReque
     IProfileSnapshotRepository profileRepo,
     IRecommendationRepository recRepo,
     INotificationRepository notifRepo,
-    IEventPublisher eventPublisher,
     IChildProfileService profileService,  // Added for behavior updates
     InMemoryIdempotencyStore idemStore,
     ILogger<Program> logger,

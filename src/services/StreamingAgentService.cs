@@ -115,7 +115,7 @@ public class StreamingAgentService : IStreamingAgentService
 
         // Stream agent response using RunAsync (Agent Framework doesn't expose token-level streaming yet)
         // For demo purposes, we'll simulate streaming by chunking the response
-        AgentRunResponse? result = null;
+        AgentResponse? result = null;
         string? agentError = null;
         try
         {

@@ -2,19 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让所有 Agent 使用可配置的本地 OpenAI-compatible 模型端点，同时移除运行时对 Azure OpenAI 的依赖。
+**Goal:** 在 `Runtime:Mode=SelfHosted` 下让所有 Agent 使用可配置的用户控制 OpenAI-compatible 模型端点；阶段 0 完整闸门通过前保留 Azure AI 模式。
 
-**Architecture:** 把 `IChatClient` 的建立集中到配置验证过的 factory/DI registration。`Program.cs` 主 Agent、AG-UI Agent、RecommendationService 和 MultiAgentOrchestrator 均从同一注册获取客户端；Agent system prompt、工具定义、SSE/API 契约维持现状。
+**Architecture:** 把 `IChatClient` 的建立集中到配置验证过的 factory/DI registration。Azure 模式继续使用现有 Azure OpenAI client；SelfHosted 模式使用标准 OpenAI-compatible endpoint。主 Agent、AG-UI Agent、RecommendationService 和 MultiAgentOrchestrator 均从同一模式选择的注册获取客户端；Agent system prompt、工具定义、SSE/API 契约维持现状。
 
-**Tech Stack:** .NET 9、Microsoft Agent Framework、Microsoft.Extensions.AI、Microsoft.Extensions.AI.OpenAI 现有 package、本地 OpenAI-compatible inference server。
+**Tech Stack:** .NET 9、Microsoft Agent Framework、Microsoft.Extensions.AI、Microsoft.Extensions.AI.OpenAI 现有 package、用户控制的本地或远端 OpenAI-compatible inference server。
 
 ## Global Constraints
 
-- 模型运行在本地/自有主机，不依赖 Azure endpoint、Entra token 或云 API。
-- 配置键统一为 `AI:Endpoint`、`AI:Model`、`AI:ApiKey`；本地兼容服务允许 API key 使用本地占位值，但不得写入仓库。
+- SelfHosted 模型运行在开发机或用户控制的自有主机，不依赖 Azure endpoint、Entra token 或第三方云模型 API。
+- API 内配置键为 `AI:Endpoint`、`AI:Model`、`AI:ApiKey`；Aspire/开发 shell 从 `LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 映射。API key 不得写入仓库、日志、dashboard 或测试报告。
 - 保留现有 Agent 名称、system prompts、tool schemas、SSE 事件格式及 tool-calling 行为。
 - 模型不可用时明确报错；任何保留的 deterministic fallback 必须在 API/结果中明确标记，不能伪装成模型成功。
 - `src/src.csproj` 维持 `net9.0`。
+- 阶段 0 完整兼容性闸门通过前，保留 Azure OpenAI DI 分支和 NuGet package；只允许重构成由 `Runtime:Mode` 选择的双 provider 实现。
 
 ---
 
@@ -47,11 +48,11 @@ public sealed class AiOptions
 }
 ```
 
-Factory 提供 `AddLocalOpenAiChatClient(IServiceCollection, IConfiguration)` 扩展方法，注册 singleton `IChatClient`，使用标准 `OpenAI.Chat.ChatClient`/`OpenAIClientOptions.Endpoint`，不使用 `Azure.AI.OpenAI.AzureOpenAIClient`。
+Factory 提供按 `Runtime:Mode` 选择的 `AddRuntimeChatClient(IServiceCollection, IConfiguration)` 扩展方法，注册 singleton `IChatClient`。SelfHosted 分支使用标准 `OpenAI.Chat.ChatClient`/`OpenAIClientOptions.Endpoint`；Azure 分支保留 `Azure.AI.OpenAI.AzureOpenAIClient` 构造并返回同一 `IChatClient` abstraction。
 
 - [ ] **步骤 1：先写选项验证测试**
 
-在 `ChatClientRegistrationTests` 验证缺少 Endpoint/Model 时 options validation 报出包含缺失键名的错误；有效的本地 endpoint 和 model 能创建 DI service descriptor；API key 为空时采用仅限本地兼容服务的非秘密值，不读取 Azure 环境变量。
+在 `ChatClientRegistrationTests` 验证缺少 Endpoint/Model 时 options validation 报出包含缺失键名的错误；SelfHosted 有效 endpoint/model 能创建 DI service descriptor；Azure 模式仍能使用现有 Azure 配置。SelfHosted 的 API key 可留空或由用户控制服务配置，但不得读取/记录其他 provider 的 credential。
 
 - [ ] **步骤 2：运行目标测试确认未实现**
 
@@ -59,7 +60,7 @@ Factory 提供 `AddLocalOpenAiChatClient(IServiceCollection, IConfiguration)` �
 
 - [ ] **步骤 3：实现 options、factory 和配置**
 
-将 options 注册为启动时验证；在 factory 中以 `OpenAIClientOptions.Endpoint = new Uri(options.Endpoint)` 构造标准 OpenAI client，再调用其 chat client 的 `.AsIChatClient()`。把 `AI:Endpoint`、`AI:Model` 放入 `appsettings.json` 的空/本地默认值，不放真实密钥。
+将 options 注册为启动时验证；SelfHosted factory 以 `OpenAIClientOptions.Endpoint = new Uri(options.Endpoint)` 构造标准 OpenAI client，再调用 chat client 的 `.AsIChatClient()`。Azure factory 继续使用现有 endpoint、deployment 和 API key/managed identity 配置。`appsettings.json` 仅放无凭据默认值；真实配置从环境变量或 user secrets 提供。
 
 - [ ] **步骤 4：运行目标测试**
 
@@ -99,7 +100,7 @@ Factory 提供 `AddLocalOpenAiChatClient(IServiceCollection, IConfiguration)` �
 
 运行 `dotnet test tests\Tests.csproj --filter "FullyQualifiedName~RecommendationServiceTests|FullyQualifiedName~AgentProviderWiringTests|FullyQualifiedName~ChatClientRegistrationTests"`。预期成功路径、工具 Agent 创建、失败形状和取消行为均通过。
 
-## Task 3：移除 Azure OpenAI runtime package 并验证本地模型
+## Task 3：验证自托管模型并延后移除 Azure package
 
 **Files:**
 - 修改：`src/src.csproj`
@@ -110,19 +111,19 @@ Factory 提供 `AddLocalOpenAiChatClient(IServiceCollection, IConfiguration)` �
 
 - [ ] **步骤 1：添加本地模型 opt-in 集成测试**
 
-`LocalAiAgentTests` 在 `LOCAL_AI_TESTS=1` 时访问 `AI__Endpoint` 和 `AI__Model`，提交一项要求工具调用的 prompt，并验证有最终内容/结束事件；未设置 flag 时测试显式跳过，普通 CI 不下载模型。
+`LocalAiAgentTests` 在 `LOCAL_AI_TESTS=1` 时访问由 `LLM_BASE_URL`、`LLM_MODEL_NAME`、`LLM_API_KEY` 映射来的 `AI:*` 设置，提交一项要求工具调用的 prompt，并验证有最终内容/正常结束事件；未设置 flag 时测试显式跳过，普通 CI 不下载模型。
 
 - [ ] **步骤 2：运行本地模型集成测试（开发者环境）**
 
-启动本地 OpenAI-compatible inference server 后运行 `dotnet test tests\Tests.csproj --filter FullyQualifiedName~LocalAiAgentTests`。预期至少一个推荐 Agent 的工具调用完成且响应有内容；无模型服务时得到明确连接错误，不返回静默 fallback 成功。
+启动或访问用户控制的 OpenAI-compatible self-hosted inference server 后运行 `LOCAL_AI_TESTS=1` 的目标测试。预期至少一个项目 Agent 的工具调用完成且响应有内容；无模型服务时得到明确连接错误，不返回静默 fallback 成功。
 
 - [ ] **步骤 3：移除旧 Azure OpenAI package 和配置说明**
 
-从 `src/src.csproj` 删除 `Azure.AI.OpenAI`；若 `Directory.Packages.props` 仍固定 Azure OpenAI package 版本则同步删除。将 README 配置说明改为 `AI:Endpoint`、`AI:Model`、`AI:ApiKey` 本地设置，并记录本地推理运行时和所选模型的工具调用检查步骤。
+README 同时记录 `Runtime:Mode=SelfHosted` 与 Azure legacy mode。只有完整 Drasi/Aspire/API/SSE/SignalR/Agent 兼容性闸门已记为 Passed 后，才从 `src/src.csproj` 删除 `Azure.AI.OpenAI`，并同步删除 `Directory.Packages.props` 中不再使用的 Azure OpenAI package 固定项；此前不得执行 package cleanup。
 
 - [ ] **步骤 4：检查 Azure OpenAI 残留并跑测试**
 
-运行 `rg -n "AzureOpenAIClient|AZURE_OPENAI_|Azure.AI.OpenAI" src tests`，预期无运行时代码结果；运行 `dotnet build SantaDigitalShowcae25.sln` 和 `dotnet test tests\Tests.csproj`，预期通过。
+闸门通过并获准清理后，运行 `rg -n "AzureOpenAIClient|AZURE_OPENAI_|Azure.AI.OpenAI" src tests`，预期无 SelfHosted runtime path 残留；Azure legacy package 删除须与单独批准的 cutover commit 同步。运行 `dotnet build SantaDigitalShowcae25.sln` 和 `dotnet test tests\Tests.csproj`，预期通过。
 
 ## Task 4：提交本地 AI 工作流
 

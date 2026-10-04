@@ -13,6 +13,8 @@
 - 运行路径不依赖 Azure Cosmos DB、Event Hubs、Key Vault、Azure 身份或 Azure 端点。
 - 不改动现有公开 API DTO、事件字段、schema 版本、幂等及去重语义，除非契约测试明确记录用户批准的变化。
 - Drasi 自托管输入和结果输出、Aspire/kind 网络、代表性查询/实时流及本地 AI 工具调用全部验证通过前，不移除现有可运行路径。
+- 按[阶段 0A 验证模式计划](./2026-10-04-selfhosted-validation-mode.md)先新增可选 PostgreSQL/API 垂直切片；该准备工作不得删除、禁用或改变 Azure 默认运行路径。
+- Drasi 0.10.0 当前已安装 source providers 中没有 MongoDB；本计划的已验证持久化和 CDC 目标固定为 PostgreSQL。
 - 数据库迁移通过显式迁移文件管理；服务启动不得静默创建缺失 schema 并将失败报告为成功。
 - 真正临时的 stream broadcaster、metrics、stream resume 和 Agent 取消状态可保留在内存；儿童、wishlist、recommendation、assessment、notification、job、report 和 workshop event 等业务状态不得以进程内存作为持久化替代。
 
@@ -49,11 +51,11 @@
 
 使用现有 `drasi/install-drasi.ps1` 前，先确认脚本不会创建 Azure 资源或覆盖当前 Kubernetes context。建立名为 `santa-local` 的一次性 kind 集群，将 context 明确切换到该集群，再安装 Dapr 和 Drasi。向候选输入写入一条具有 `childId`、`text`、`type`、`dedupeKey`、`createdAt` 的事件。
 
-运行 `drasi list source` 和 `drasi list query`；预期候选 source 显示可用，`wishlist-updates` 进入 Running，查询结果保留现有字段和值。再验证至少一个结果通过本地 reaction 到达 API/实时流。
+运行 `drasi list source` 和 `drasi list query`；预期候选 source 显示可用，`wishlist-updates` 进入 Running，查询结果保留现有字段和值。已完成的 PostgreSQL smoke test 使用临时 HTTP receiver；真实 API/通知存储/SSE/SignalR 链路必须按阶段 0A 计划验证后才可将完整发布闸门记为 Passed。
 
 - [ ] **步骤 3：记录兼容性结论和停止条件**
 
-在 `docs/guides/drasi-self-hosted-validation.md` 记录 Drasi/Dapr 版本、镜像标签、source/reaction 类型、kind 网络地址、实际事件输入命令、查询结果和 SSE/SignalR 结果。此 Task 验证 source/reaction 候选和事件契约；完整发布闸门还需通过本地 AI 集成测试以及 Aspire/kind 网络计划中的 Pod 双向连通、代表性查询和实时流测试。任何 source/reaction 无法运行、Entra 身份仍被要求或事件 schema 不兼容时，将结论写为 **Blocked** 并停止 Task 2 之后的事件链任务；请求用户在自定义 Drasi adapter 与替换 Drasi 两者间决策。
+在 `docs/guides/drasi-self-hosted-validation.md` 记录 Drasi/Dapr 版本、镜像标签、source/reaction 类型、kind 网络验证、实际事件输入命令和查询结果。此 Task 验证 source/reaction 候选和事件契约；阶段 0A 完成前，API、实时流和 Aspire/kind 端到端状态仍为 **Blocked**。任何 source/reaction 无法运行、Entra 身份仍被要求或事件 schema 不兼容时，记录证据并停止依赖该候选的工作。
 
 ## Task 2：建立 PostgreSQL schema 和迁移
 

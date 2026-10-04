@@ -1,7 +1,6 @@
 using Models;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Azure.Identity;
 using System.Text.Json;
 
 namespace Services;
@@ -20,9 +19,8 @@ public class RecommendationService : IRecommendationService
 {
     private readonly IChildProfileService _profileService;
     private readonly IDrasiViewClient _drasiClient;
-    private readonly IConfiguration _configuration;
     private readonly ILogger<RecommendationService> _logger;
-    private IChatClient? _chatClient;
+    private readonly IChatClient _chatClient;
     private AIAgent? _recommendationAgent;
 
     // PERFORMANCE: Cache trending data to avoid repeated Drasi queries
@@ -34,33 +32,13 @@ public class RecommendationService : IRecommendationService
     public RecommendationService(
         IChildProfileService profileService,
         IDrasiViewClient drasiClient,
-        IConfiguration configuration,
+        IChatClient chatClient,
         ILogger<RecommendationService> logger)
     {
         _profileService = profileService;
         _drasiClient = drasiClient;
-        _configuration = configuration;
+        _chatClient = chatClient;
         _logger = logger;
-    }
-
-    private IChatClient GetOrCreateChatClient()
-    {
-        if (_chatClient is not null)
-            return _chatClient;
-
-        var endpoint = _configuration["AZURE_OPENAI_ENDPOINT"]
-            ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
-        var deploymentName = _configuration["AZURE_OPENAI_DEPLOYMENT_NAME"]
-            ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
-
-        if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(deploymentName))
-        {
-            throw new InvalidOperationException("Azure OpenAI endpoint and deployment name must be configured via AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT_NAME");
-        }
-
-        var azureClient = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential());
-        _chatClient = azureClient.GetChatClient(deploymentName).AsIChatClient();
-        return _chatClient;
     }
 
     private AIAgent GetOrCreateAgent()
@@ -68,8 +46,7 @@ public class RecommendationService : IRecommendationService
         if (_recommendationAgent is not null)
             return _recommendationAgent;
 
-        var chatClient = GetOrCreateChatClient();
-        _recommendationAgent = chatClient.CreateAIAgent(
+        _recommendationAgent = _chatClient.AsAIAgent(
             name: "ElfRecommendationAgent",
             instructions: """
             You are the Elf Recommendation Agent for Santa's Workshop - a playful Christmas gift recommendation demo.

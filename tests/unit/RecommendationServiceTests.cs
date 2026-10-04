@@ -1,7 +1,7 @@
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Models;
 using Moq;
@@ -14,14 +14,14 @@ public class RecommendationServiceTests
 {
     private readonly Mock<IChildProfileService> _profileMock;
     private readonly Mock<IDrasiViewClient> _drasiMock;
-    private readonly Mock<IConfiguration> _configMock;
+    private readonly Mock<IChatClient> _chatClientMock;
     private readonly Mock<ILogger<RecommendationService>> _loggerMock;
 
     public RecommendationServiceTests()
     {
         _profileMock = new Mock<IChildProfileService>();
         _drasiMock = new Mock<IDrasiViewClient>();
-        _configMock = new Mock<IConfiguration>();
+        _chatClientMock = new Mock<IChatClient>();
         _loggerMock = new Mock<ILogger<RecommendationService>>();
 
         // Setup default Drasi mock to return empty (AI not available in test)
@@ -31,7 +31,7 @@ public class RecommendationServiceTests
     }
 
     [Fact]
-    public async Task GetTopNAsync_NaughtyChild_FallbackReturnsCoalAndCharacterBuildingItems()
+    public async Task GetTopNAsync_NaughtyChild_FallbackReturnsEducationalAndCharacterBuildingItems()
     {
         // Arrange - AI will fail without config, so fallback should kick in
         _profileMock
@@ -48,11 +48,12 @@ public class RecommendationServiceTests
         var service = new RecommendationService(
             _profileMock.Object, 
             _drasiMock.Object, 
-            _configMock.Object, 
+            _chatClientMock.Object,
             _loggerMock.Object);
         var result = await service.GetTopNAsync("naughty-child", 3, CancellationToken.None);
         Assert.Equal(3, result.Count);
-        Assert.Contains(result, r => r.Suggestion.Contains("Coal"));
+        Assert.Contains(result, r => r.Suggestion.Contains("Science Explorer Kit"));
+        Assert.Contains(result, r => r.Suggestion.Contains("Character Building Story Collection"));
         Assert.All(result, r => Assert.Equal("naughty-child", r.ChildId));
     }
 
@@ -73,7 +74,7 @@ public class RecommendationServiceTests
         var service = new RecommendationService(
             _profileMock.Object, 
             _drasiMock.Object, 
-            _configMock.Object, 
+            _chatClientMock.Object,
             _loggerMock.Object);
         var result = await service.GetTopNAsync("nice-child", 3, CancellationToken.None);
         Assert.Equal(3, result.Count);
@@ -100,7 +101,7 @@ public class RecommendationServiceTests
         var service = new RecommendationService(
             _profileMock.Object, 
             _drasiMock.Object, 
-            _configMock.Object, 
+            _chatClientMock.Object,
             _loggerMock.Object);
         var result = await service.GetTopNAsync("new-child", 3, CancellationToken.None);
         Assert.Equal(3, result.Count);
@@ -117,7 +118,7 @@ public class RecommendationServiceTests
         var service = new RecommendationService(
             _profileMock.Object, 
             _drasiMock.Object, 
-            _configMock.Object, 
+            _chatClientMock.Object,
             _loggerMock.Object);
         var result = await service.GetTopNAsync("missing-child", 3, CancellationToken.None);
         Assert.Equal(3, result.Count);
@@ -141,7 +142,7 @@ public class RecommendationServiceTests
         var service = new RecommendationService(
             _profileMock.Object, 
             _drasiMock.Object, 
-            _configMock.Object, 
+            _chatClientMock.Object,
             _loggerMock.Object);
         var result = await service.GetTopNAsync("naughty-child", 4, CancellationToken.None);
 
